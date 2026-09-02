@@ -188,13 +188,23 @@ def test_parse_intent_reuses_context_only_for_followup(monkeypatch):
     assert result["missing_params"] == []
 
 
-def test_generic_counterfeit_query_matches_specialized_p_clothing_channel():
-    assert _cargo_matches(
-        "P服装",
-        "仿牌",
-        "ED以色列专线到门-P鞋服(YZ)",
-        ["P服装", "鞋子"],
-    )
+def test_generic_counterfeit_query_matches_all_p_prefixed_channel_types():
+    for supported_type in ("P", "P服装", "P鞋服", "P包"):
+        assert _cargo_matches(
+            supported_type,
+            "仿牌",
+            f"以色列敏货专线-{supported_type}",
+            [supported_type],
+        )
+
+
+def test_sensitive_cargo_synonyms_normalize_to_p():
+    from agent.tools import normalize_cargo_type
+
+    assert normalize_cargo_type("仿牌") == "P"
+    assert normalize_cargo_type("敏货") == "P"
+    assert normalize_cargo_type("敏感货") == "P"
+    assert normalize_cargo_type("P") == "P"
 
 
 def test_explicit_p_clothing_query_does_not_match_generic_p_channel():
