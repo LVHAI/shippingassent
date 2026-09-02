@@ -1,10 +1,9 @@
-import math
 import sqlite3
 
 import pytest
 
 from data_pipeline.xls_parser import ChannelRate
-from data_pipeline.sqlite_loader import init_db, load_rates
+from data_pipeline.sqlite_loader import init_db, load_from_xls, load_rates
 from agent.tools import calculate_rate
 
 
@@ -125,3 +124,35 @@ def test_loader_creates_channels_table_with_all_rate_fields(tmp_path):
         "service_type", "notes",
     }
     assert expected <= columns
+
+
+def test_load_from_xls_imports_parsed_rates(tmp_path, monkeypatch):
+    from data_pipeline import sqlite_loader
+
+    rates = [ChannelRate(
+        sheet_name="测试渠道",
+        channel_name="美国测试普货",
+        countries="美国",
+        cargo_type="普货",
+        weight_min=0,
+        weight_max=10,
+        price_per_kg=12,
+        handling_fee=3,
+    )]
+
+    class FakePipeline:
+        def __init__(self, xls_path):
+            self.xls_path = xls_path
+
+        def parse_all(self):
+            return rates
+
+    monkeypatch.setattr(sqlite_loader, "XLSPipeline", FakePipeline, raising=False)
+    # load_from_xls imports the parser lazily, so patch its module import target too.
+    import data_pipeline.xls_parser as parser_module
+    monkeypatch.setattr(parser_module, "XLSPipeline", FakePipeline)
+
+    db = tmp_path / "shipping.db"
+    count = load_from_xls(tmp_path / "rates.xls", db)
+    assert count == 1
+    assert sqlite3.connect(db).execute("SELECT COUNT(*) FROM channels").fetchone()[0] == 1
