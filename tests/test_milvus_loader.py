@@ -2,6 +2,7 @@ from pathlib import Path
 
 import pandas as pd
 
+from data_pipeline.milvus_loader import DashScopeEmbeddingClient, MilvusRuleLoader
 from data_pipeline.xls_parser import ChannelRule, XLSPipeline
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -71,6 +72,29 @@ def test_rule_category_supports_all_required_categories():
     }
     for expected, content in cases.items():
         assert XLSPipeline._classify_rule_category(content) == expected
+
+
+def test_dashscope_embedding_client_batches_inputs_at_provider_limit(monkeypatch):
+    calls = []
+
+    class FakeEmbedding:
+        @staticmethod
+        def call(**kwargs):
+            calls.append(kwargs["input"])
+            return {"status_code": 200, "output": {"embeddings": [{"embedding": [0.0] * 1024} for _ in kwargs["input"]]}}
+
+    class FakeDashScope:
+        TextEmbedding = FakeEmbedding
+
+    monkeypatch.setitem(__import__("sys").modules, "dashscope", FakeDashScope())
+    client = DashScopeEmbeddingClient(api_key="test")
+
+    vectors = client.embed([f"rule-{i}" for i in range(21)])
+
+    assert len(vectors) == 21
+    assert [len(batch) for batch in calls] == [20, 1]
+    assert calls[0] == [f"rule-{i}" for i in range(20)]
+    assert calls[1] == ["rule-20"]
 
 
 def test_real_workbook_extracts_rules_from_required_sheets():
