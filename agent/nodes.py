@@ -6,7 +6,7 @@ from typing import Any, Callable
 
 from agent.intent_parser import parse_intent
 from agent.state import ShippingState
-from agent.tools import calculate_rate, normalize_cargo_type
+from agent.tools import calculate_rate, normalize_cargo_type, search_rules
 
 
 FOLLOWUP_LABELS = {
@@ -49,8 +49,10 @@ def parse_intent_node(state: ShippingState) -> dict[str, Any]:
 
 
 def check_params_node(state: ShippingState) -> dict[str, Any]:
-    """Choose the quote path when all required parameters are available."""
-    return {"route": "ready" if not state.get("missing_params") else "ask_followup"}
+    """Mark the state ready only when rate parameters are complete."""
+    if state.get("intent_type") in {"rate_query", "mixed"} and state.get("missing_params"):
+        return {"route": "ask_followup"}
+    return {"route": "ready"}
 
 
 def calculate_rate_node(state: ShippingState) -> dict[str, Any]:
@@ -61,6 +63,14 @@ def calculate_rate_node(state: ShippingState) -> dict[str, Any]:
     if not country or weight is None or not cargo_type:
         return {"rate_results": []}
     return {"rate_results": calculate_rate(country, weight, cargo_type)}
+
+
+def search_rules_node(state: ShippingState) -> dict[str, Any]:
+    """Retrieve shipping rules semantically and store the results in graph state."""
+    query = state.get("user_input", "").strip()
+    if not query:
+        return {"rule_results": []}
+    return {"rule_results": search_rules(query=query, top_k=5)}
 
 
 def _dashscope_format(prompt: str) -> str:
@@ -76,8 +86,8 @@ def _dashscope_format(prompt: str) -> str:
             {
                 "role": "system",
                 "content": (
-                    "你是运费助手回复格式化器。只根据给定的报价数据组织自然语言，"
-                    "绝对不能修改、四舍五入、增加或删除任何渠道、价格、时效。"
+                    "你是运费助手回复格式化器。只根据给定的报价和规则数据组织自然语言。"
+                    "不得修改报价数字、渠道、时效或规则原文；没有依据的数据不得补充。"
                 ),
             },
             {"role": "user", "content": prompt},
@@ -112,6 +122,18 @@ def _deterministic_rate_lines(rate_results: list[dict[str, Any]]) -> str:
         transit = item.get("transit_time") or "未提供"
         lines.append(f"{item['channel_name']}：{price_text}元，时效{transit}")
     return "\n".join(lines)
+
+
+def _deterministic_rule_lines(rule_results: list[dict[str, Any]]) -> str:
+    lines: list[str] = []
+    for item in rule_results:
+        text = str(item.get("text") or item.get("content") or "").strip()
+        if not text:
+            continue
+        category = item.get("rule_category") or item.get("category") or "规则"
+        sheet = item.get("sheet_name") or "未知来源"
+        lines.append(f"【{category}】{text}\n来源：{sheet}")
+    return "\n\n".join(lines)
 
 
 def _llm_response_is_faithful(text: str, rate_results: list[dict[str, Any]]) -> bool:
@@ -150,10 +172,33 @@ def format_rate_response(
     return _deterministic_rate_lines(rate_results)
 
 
+def _chitchat_response() -> str:
+    return "你好！我是运费助手，可以帮你查询运费、时效和物流规则。"
+
+
 def generate_response_node(state: ShippingState) -> dict[str, Any]:
-    """Generate a user-facing response without allowing the LLM to change quote data."""
+    """Generate a response from deterministic data, optionally using an LLM formatter."""
     rate_results = state.get("rate_results", [])
-    return {"response": format_rate_response(rate_results), "rate_results": rate_results}
+    rule_results = state.get("rule_results", [])
+    intent_type = state.get("intent_type", "chitchat")
+
+    if intent_type == "chitchat":
+        return {"response": _chitchat_response(), "rate_results": rate_results, "rule_results": rule_results}
+
+    if intent_type == "rule_query":
+        response = _deterministic_rule_lines(rule_results) or "抱歉，暂未找到相关物流规则。"
+        return {"response": response, "rate_results": rate_results, "rule_results": rule_results}
+
+    if intent_type == "mixed":
+        rate_text = format_rate_response(rate_results) if rate_results else "抱歉，未找到符合条件的渠道"
+        rule_text = _deterministic_rule_lines(rule_results) or "暂未找到相关规则。"
+        return {
+            "response": f"报价：\n{rate_text}\n\n规则：\n{rule_text}",
+            "rate_results": rate_results,
+            "rule_results": rule_results,
+        }
+
+    return {"response": format_rate_response(rate_results), "rate_results": rate_results, "rule_results": rule_results}
 
 
 def ask_followup_node(state: ShippingState) -> dict[str, Any]:
@@ -176,4 +221,5 @@ __all__ = [
     "format_rate_response",
     "generate_response_node",
     "parse_intent_node",
+    "search_rules_node",
 ]
