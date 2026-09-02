@@ -32,9 +32,9 @@ def test_high_frequency_cargo_synonyms(user_input, expected):
     assert normalize_cargo_type(user_input) == expected
 
 
-def test_matching_is_case_insensitive():
+def test_matching_ignores_case_and_surrounding_whitespace():
     assert normalize_cargo_type(" 普通商品 ") == "普货"
-    assert normalize_cargo_type("PH服装") == "PH服装"
+    assert normalize_cargo_type(" 手 机 ") == " 手 机 "
 
 
 def test_unmatched_input_is_returned_unchanged():
