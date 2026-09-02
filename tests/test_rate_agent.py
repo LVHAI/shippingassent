@@ -58,6 +58,18 @@ def test_generate_response_node_has_fixed_no_match_message(monkeypatch):
     assert result["response"] == "抱歉，未找到符合条件的渠道"
 
 
+def test_format_rate_response_rejects_llm_modified_price():
+    quotes = [{"channel_name": "美国普货快线", "total_price": 105.0, "transit_time": "7-15天"}]
+    result = nodes.format_rate_response(quotes, llm_call=lambda prompt: "美国普货快线：99元，时效7-15天")
+    assert result == "美国普货快线：105元，时效7-15天"
+
+
+def test_format_rate_response_accepts_faithful_llm_response():
+    quotes = [{"channel_name": "美国普货快线", "total_price": 105.0, "transit_time": "7-15天"}]
+    result = nodes.format_rate_response(quotes, llm_call=lambda prompt: "推荐美国普货快线，价格105元，时效7-15天。")
+    assert result == "推荐美国普货快线，价格105元，时效7-15天。"
+
+
 def test_graph_routes_missing_params_to_followup(monkeypatch):
     import agent.graph as graph
 
