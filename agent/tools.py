@@ -1,11 +1,12 @@
 from __future__ import annotations
 
+import json
 import math
 import os
 import re
 import sqlite3
 from pathlib import Path
-from typing import Any
+from typing import Any, Sequence
 
 from agent.logging_config import get_logger
 from data_pipeline.milvus_loader import MilvusRuleLoader
@@ -16,7 +17,7 @@ logger = get_logger("tools")
 CARGO_TYPE_SYNONYMS: dict[str, str] = {
     "普通商品": "普货", "没特殊要求": "普货", "一般货物": "普货",
     "P": "P", "P货": "P", "P服装": "P服装", "仿牌": "P", "敏货": "P", "仿牌/敏货": "P",
-    "衣服": "P服装", "服装": "P服装", "鞋子": "P服装", "包包": "P服装",
+    "衣服": "P服装", "服装": "P服装", "鞋子": "鞋子", "包包": "包包",
     "电子产品": "带电", "手机": "带电", "带电池": "带电", "笔记本": "带电",
     "化妆品": "膏体", "面霜": "膏体", "护肤品": "膏体", "香水": "液体",
     "酒精液体": "液体", "纯电池": "纯电池", "充电宝": "纯电池", "粉末": "粉末", "粉状物": "粉末",
@@ -51,7 +52,6 @@ def search_rules(query: str, top_k: int = 3, sheet_name: str | None = None, rule
 
 
 def _country_matches(countries: str | None, country: str, channel_name: str | None = None) -> bool:
-    """Match the country column, with channel-name fallback for sheets without a country cell."""
     if not country:
         return False
     requested = country.strip().casefold()
@@ -60,16 +60,36 @@ def _country_matches(countries: str | None, country: str, channel_name: str | No
     return bool(channel_name and requested in str(channel_name).casefold())
 
 
-def _cargo_matches(channel_cargo: str | None, requested_cargo: str, channel_name: str | None = None) -> bool:
-    if not channel_cargo or not requested_cargo:
+def _cargo_matches(
+    channel_cargo: str | None,
+    requested_cargo: str,
+    channel_name: str | None = None,
+    supported_cargo_types: Sequence[str] | None = None,
+) -> bool:
+    if not requested_cargo:
+        return False
+    requested = normalize_cargo_type(requested_cargo)
+    if supported_cargo_types is not None:
+        supported = {str(value).strip() for value in supported_cargo_types if str(value).strip()}
+        return requested in supported
+    if not channel_cargo:
         return False
     channel = channel_cargo.strip()
-    # Historical imports may have inferred P from a channel name containing “服装”.
-    # The explicit channel suffix means P服装, which is distinct from sensitive P.
     if channel_name and re.search(r"(?:^|[-_\s])服装(?:$|[-_\s])", str(channel_name), re.IGNORECASE):
         channel = "P服装"
-    requested = normalize_cargo_type(requested_cargo)
-    return channel == requested if requested != "普货" else channel == "普货"
+    return channel == requested
+
+
+def _decode_supported_cargo_types(value: Any) -> list[str] | None:
+    if value is None or value == "":
+        return None
+    if isinstance(value, (list, tuple, set)):
+        return [str(item) for item in value]
+    try:
+        decoded = json.loads(str(value))
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return None
+    return [str(item) for item in decoded] if isinstance(decoded, list) else None
 
 
 def _calculate_total(row: sqlite3.Row, weight: float) -> float | None:
@@ -117,7 +137,8 @@ def calculate_rate(country: str, weight: float, cargo_type: str) -> list[dict[st
         if not _country_matches(row["countries"], country, row["channel_name"]):
             continue
         country_candidates += 1
-        if not _cargo_matches(row["cargo_type"], cargo_type, row["channel_name"]):
+        supported = _decode_supported_cargo_types(row["supported_cargo_types"]) if "supported_cargo_types" in row.keys() else None
+        if not _cargo_matches(row["cargo_type"], cargo_type, row["channel_name"], supported):
             continue
         cargo_candidates += 1
         if row["price_per_kg"] is not None and row["weight_min"] is not None and weight < float(row["weight_min"]):
@@ -125,7 +146,7 @@ def calculate_rate(country: str, weight: float, cargo_type: str) -> list[dict[st
         total = _calculate_total(row, weight)
         if total is None:
             continue
-        results.append({"id": row["id"], "sheet_name": row["sheet_name"], "channel_name": row["channel_name"], "countries": row["countries"], "cargo_type": row["cargo_type"], "weight_min": row["weight_min"], "weight_max": row["weight_max"], "price_per_kg": row["price_per_kg"], "handling_fee": row["handling_fee"], "first_weight": row["first_weight"], "first_weight_price": row["first_weight_price"], "additional_weight": row["additional_weight"], "additional_weight_price": row["additional_weight_price"], "total_price": total, "transit_time": row["transit_time"], "carrier": row["carrier"], "size_requirements": row["size_requirements"]})
+        results.append({"id": row["id"], "sheet_name": row["sheet_name"], "channel_name": row["channel_name"], "countries": row["countries"], "cargo_type": row["cargo_type"], "supported_cargo_types": supported or [], "weight_min": row["weight_min"], "weight_max": row["weight_max"], "price_per_kg": row["price_per_kg"], "handling_fee": row["handling_fee"], "first_weight": row["first_weight"], "first_weight_price": row["first_weight_price"], "additional_weight": row["additional_weight"], "additional_weight_price": row["additional_weight_price"], "total_price": total, "transit_time": row["transit_time"], "carrier": row["carrier"], "size_requirements": row["size_requirements"]})
 
     results.sort(key=lambda item: (item["total_price"], item["channel_name"]))
     logger.info("rate.query.end sql_candidates=%d country_candidates=%d cargo_candidates=%d results=%d", len(rows), country_candidates, cargo_candidates, len(results))
