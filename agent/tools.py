@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import math
 import os
+import re
 import sqlite3
 from pathlib import Path
 from typing import Any
@@ -14,8 +15,8 @@ logger = get_logger("tools")
 
 CARGO_TYPE_SYNONYMS: dict[str, str] = {
     "普通商品": "普货", "没特殊要求": "普货", "一般货物": "普货",
-    "P": "P", "P货": "P", "P服装": "P", "仿牌": "P", "敏货": "P", "仿牌/敏货": "P",
-    "衣服": "P", "服装": "P", "鞋子": "P", "包包": "P",
+    "P": "P", "P货": "P", "P服装": "P服装", "仿牌": "P", "敏货": "P", "仿牌/敏货": "P",
+    "衣服": "P服装", "服装": "P服装", "鞋子": "P服装", "包包": "P服装",
     "电子产品": "带电", "手机": "带电", "带电池": "带电", "笔记本": "带电",
     "化妆品": "膏体", "面霜": "膏体", "护肤品": "膏体", "香水": "液体",
     "酒精液体": "液体", "纯电池": "纯电池", "充电宝": "纯电池", "粉末": "粉末", "粉状物": "粉末",
@@ -59,10 +60,14 @@ def _country_matches(countries: str | None, country: str, channel_name: str | No
     return bool(channel_name and requested in str(channel_name).casefold())
 
 
-def _cargo_matches(channel_cargo: str | None, requested_cargo: str) -> bool:
+def _cargo_matches(channel_cargo: str | None, requested_cargo: str, channel_name: str | None = None) -> bool:
     if not channel_cargo or not requested_cargo:
         return False
     channel = channel_cargo.strip()
+    # Historical imports may have inferred P from a channel name containing “服装”.
+    # The explicit channel suffix means P服装, which is distinct from sensitive P.
+    if channel_name and re.search(r"(?:^|[-_\s])服装(?:$|[-_\s])", str(channel_name), re.IGNORECASE):
+        channel = "P服装"
     requested = normalize_cargo_type(requested_cargo)
     return channel == requested if requested != "普货" else channel == "普货"
 
@@ -112,7 +117,7 @@ def calculate_rate(country: str, weight: float, cargo_type: str) -> list[dict[st
         if not _country_matches(row["countries"], country, row["channel_name"]):
             continue
         country_candidates += 1
-        if not _cargo_matches(row["cargo_type"], cargo_type):
+        if not _cargo_matches(row["cargo_type"], cargo_type, row["channel_name"]):
             continue
         cargo_candidates += 1
         if row["price_per_kg"] is not None and row["weight_min"] is not None and weight < float(row["weight_min"]):
