@@ -1,0 +1,8 @@
+langgraph
+langchain-core
+dashscope
+pymilvus[lite]
+pandas
+xlrd
+streamlit
+python-dotenv
