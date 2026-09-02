@@ -71,12 +71,20 @@ def _cargo_matches(
     requested = normalize_cargo_type(requested_cargo)
     if supported_cargo_types is not None:
         supported = {str(value).strip() for value in supported_cargo_types if str(value).strip()}
+        # "P/仿牌" is the generic sensitive-cargo query. A channel explicitly
+        # accepting the specialized P-clothing capability is therefore also a
+        # valid match. The reverse is intentionally not allowed: querying
+        # P服装 must never match a generic P-only channel.
+        if requested == "P":
+            return "P" in supported or "P服装" in supported
         return requested in supported
     if not channel_cargo:
         return False
     channel = channel_cargo.strip()
     if channel_name and re.search(r"(?:^|[-_\s])服装(?:$|[-_\s])", str(channel_name), re.IGNORECASE):
         channel = "P服装"
+    if requested == "P":
+        return channel in {"P", "P服装"}
     return channel == requested
 
 
