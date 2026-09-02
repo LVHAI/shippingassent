@@ -329,6 +329,26 @@ class XLSPipeline:
 
     @classmethod
     def _infer_cargo_type(cls, channel: str | None, accepted: str | None, headers: str = "") -> str | None:
+        """Infer cargo type while treating an explicit XLS cargo column as authoritative."""
+        if accepted:
+            explicit = accepted.strip()
+            if "普货" in explicit and not any(term in explicit for term in ("带电", "纯电池", "液体", "膏体", "粉末")):
+                return "普货"
+            if explicit in {"P", "P货", "P服装", "仿牌", "敏货", "仿牌/敏货"}:
+                return "P"
+            if "纯电池" in explicit:
+                return "纯电池"
+            if "带电" in explicit:
+                return "带电"
+            if "液体" in explicit:
+                return "液体"
+            if "膏体" in explicit:
+                return "膏体"
+            if "粉末" in explicit:
+                return "粉末"
+            if "特货" in explicit:
+                return "特货"
+
         text = f"{channel or ''} {accepted or ''} {headers}"
         if "纯电池" in text:
             return "纯电池"
