@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import time
+from collections.abc import Iterator
 from typing import Literal
 
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, START, StateGraph
 
+from agent.logging_config import get_logger
 from agent.nodes import (
     ask_followup_node,
     calculate_rate_node,
@@ -15,6 +18,8 @@ from agent.nodes import (
 )
 from agent.state import ShippingState
 
+
+logger = get_logger("graph")
 _CHECKPOINTER = MemorySaver()
 
 
@@ -64,6 +69,42 @@ def build_graph(checkpointer: MemorySaver | None = None):
     return graph.compile(checkpointer=checkpointer or _CHECKPOINTER)
 
 
+def _initial_state(user_input: str, previous_state: ShippingState | None) -> ShippingState:
+    if previous_state is not None and previous_state.get("route") == "ask_followup":
+        return {
+            "user_input": user_input,
+            "country": previous_state.get("country"),
+            "weight": previous_state.get("weight"),
+            "cargo_type": previous_state.get("cargo_type"),
+        }
+    return {"user_input": user_input}
+
+
+def run_stream(
+    user_input: str,
+    previous_state: ShippingState | None = None,
+    conversation_id: str = "default",
+) -> Iterator[dict]:
+    """Stream standardized node updates while retaining LangGraph checkpoint state."""
+    state = _initial_state(user_input, previous_state)
+    config = {"configurable": {"thread_id": conversation_id}}
+    logger.info("workflow.start thread_id=%s input_chars=%d", conversation_id, len(user_input))
+    started = time.perf_counter()
+    try:
+        for update in workflow.stream(state, config, stream_mode="updates"):
+            if not isinstance(update, dict):
+                logger.warning("workflow.unexpected_update type=%s", type(update).__name__)
+                continue
+            for node, data in update.items():
+                logger.info("workflow.stream node=%s keys=%s", node, sorted(data) if isinstance(data, dict) else [])
+                event = {"event": "node_update", "node": node, "data": data if isinstance(data, dict) else {"value": data}}
+                yield event
+        logger.info("workflow.end thread_id=%s elapsed_ms=%.1f", conversation_id, (time.perf_counter() - started) * 1000)
+    except Exception:
+        logger.exception("workflow.failed thread_id=%s elapsed_ms=%.1f", conversation_id, (time.perf_counter() - started) * 1000)
+        raise
+
+
 def run_once(
     user_input: str,
     previous_state: ShippingState | None = None,
@@ -71,20 +112,18 @@ def run_once(
 ) -> ShippingState:
     """Run one turn; the checkpointer retains the conversation by conversation_id."""
     config = {"configurable": {"thread_id": conversation_id}}
-    if previous_state is not None and previous_state.get("route") == "ask_followup":
-        # Keep compatibility with callers that pass an explicit previous state while
-        # allowing the checkpointer to remain the source of truth for normal turns.
-        state: ShippingState = {
-            "user_input": user_input,
-            "country": previous_state.get("country"),
-            "weight": previous_state.get("weight"),
-            "cargo_type": previous_state.get("cargo_type"),
-        }
-    else:
-        state = {"user_input": user_input}
-    return workflow.invoke(state, config)
+    state = _initial_state(user_input, previous_state)
+    logger.info("workflow.invoke.start thread_id=%s input_chars=%d", conversation_id, len(user_input))
+    started = time.perf_counter()
+    try:
+        result = workflow.invoke(state, config)
+        logger.info("workflow.invoke.end thread_id=%s elapsed_ms=%.1f response_chars=%d", conversation_id, (time.perf_counter() - started) * 1000, len(str(result.get("response", ""))))
+        return result
+    except Exception:
+        logger.exception("workflow.invoke.failed thread_id=%s elapsed_ms=%.1f", conversation_id, (time.perf_counter() - started) * 1000)
+        raise
 
 
 workflow = build_graph()
 
-__all__ = ["build_graph", "run_once", "workflow"]
+__all__ = ["build_graph", "run_once", "run_stream", "workflow"]
