@@ -14,4 +14,5 @@ class ShippingState(TypedDict, total=False):
     missing_params: list[str]
     route: str
     rate_results: list[dict[str, Any]]
+    rule_results: list[dict[str, Any]]
     response: str
