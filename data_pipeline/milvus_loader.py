@@ -14,7 +14,7 @@ ROOT = Path(__file__).resolve().parents[1]
 MILVUS_DB_PATH = ROOT / "vectordb" / "milvus_data.db"
 COLLECTION_NAME = "shipping_rules"
 EMBEDDING_DIM = 1024
-DASHSCOPE_BATCH_SIZE = 20
+DASHSCOPE_BATCH_SIZE = 10
 
 
 class EmbeddingClient(Protocol):
@@ -45,6 +45,8 @@ class DashScopeEmbeddingClient:
                 input=batch,
             )
             status = getattr(response, "status_code", None)
+            if status is None and isinstance(response, dict):
+                status = response.get("status_code")
             if status not in (None, 200):
                 raise RuntimeError(f"DashScope embedding failed: {response}")
 
