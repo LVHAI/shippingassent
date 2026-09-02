@@ -12,6 +12,7 @@ class ChannelRate:
     channel_name: str | None = None
     countries: str | None = None
     cargo_type: str | None = None
+    supported_cargo_types: tuple[str, ...] = ()
     weight_min: float | None = None
     weight_max: float | None = None
     price_per_kg: float | None = None
@@ -47,9 +48,7 @@ class XLSPipeline:
     }
     STANDALONE_RULE_SHEETS = ("易德赔付标准", "退费额外费要求", "航空禁运物品")
     PURE_HEADER_TERMS = ("规则类别", "规则内容", "内容", "说明", "备注", "物品名称", "类别", "序号", "国家", "渠道", "重量", "运费", "处理费", "尺寸要求", "参考时效")
-    COUNTRY_COMPOSITE_SHEETS = (
-        ("西葡", "西班牙、葡萄牙"),
-    )
+    COUNTRY_COMPOSITE_SHEETS = (("西葡", "西班牙、葡萄牙"),)
 
     def __init__(self, xls_path: str | Path):
         self.xls_path = Path(xls_path)
@@ -100,14 +99,17 @@ class XLSPipeline:
             country = self._text(row.get(country_col)) if country_col else self._infer_country(sheet_name, channel)
             accepted = self._text(row.get(cargo_col)) if cargo_col else None
             selected_price_header = str(price_col or "")
+            supported = tuple(self._parse_supported_cargo_types(accepted))
             cargo = self._infer_cargo_type(channel, accepted, f"{header_text} {selected_price_header}")
+            if not supported and cargo:
+                supported = (cargo,)
             price = self._number(row.get(price_col)) if price_col else None
             handling = self._number(row.get(handling_col)) if handling_col else None
             first_weight = self._weight_from_header(first_col)
             additional_weight = self._weight_from_header(additional_col)
             first_price = self._number(row.get(first_col)) if first_col else None
             additional_price = self._number(row.get(additional_col)) if additional_col else None
-            results.append(ChannelRate(sheet_name=sheet_name, channel_name=channel, countries=country, cargo_type=cargo, weight_min=weight[0], weight_max=weight[1], price_per_kg=price, handling_fee=handling, first_weight=first_weight, first_weight_price=first_price, additional_weight=additional_weight, additional_weight_price=additional_price, size_requirements=self._text(row.get(size_col)) if size_col else None, transit_time=self._text(row.get(transit_col)) if transit_col else None, carrier=self._text(row.get(carrier_col)) if carrier_col else None))
+            results.append(ChannelRate(sheet_name=sheet_name, channel_name=channel, countries=country, cargo_type=cargo, supported_cargo_types=supported, weight_min=weight[0], weight_max=weight[1], price_per_kg=price, handling_fee=handling, first_weight=first_weight, first_weight_price=first_price, additional_weight=additional_weight, additional_weight_price=additional_price, size_requirements=self._text(row.get(size_col)) if size_col else None, transit_time=self._text(row.get(transit_col)) if transit_col else None, carrier=self._text(row.get(carrier_col)) if carrier_col else None))
         return results
 
     def extract_all_rules(self) -> list[ChannelRule]:
@@ -146,6 +148,41 @@ class XLSPipeline:
                 continue
             rules.append(ChannelRule(sheet_name=sheet_name, channel_name=self._infer_standalone_rule_channel(content), rule_category=self._classify_rule_category(content), content=content))
         return rules
+
+    @classmethod
+    def _parse_supported_cargo_types(cls, accepted: str | None) -> list[str]:
+        if not accepted:
+            return []
+        text = accepted.strip()
+        # Remove explicit negative clauses so "不接带电、液体" never becomes a capability.
+        text = re.sub(r"(?:不接|不支持|不收|拒收)[^，,；;。)]*", "", text)
+        matches: list[tuple[int, str]] = []
+        patterns = (
+            ("P服装", r"P服装"),
+            ("普货", r"普货"),
+            ("包包", r"包包"),
+            ("鞋子", r"鞋子"),
+            ("服装", r"服装"),
+            ("纯电池", r"纯电池"),
+            ("带电", r"(?:带电|内电)"),
+            ("弱磁", r"弱磁"),
+            ("膏体", r"膏体"),
+            ("液体", r"液体"),
+            ("粉末", r"粉末|粉状物"),
+            ("特货", r"特货"),
+            ("P", r"(?<![A-Za-z0-9])P(?!服装)"),
+        )
+        for cargo_type, pattern in patterns:
+            for match in re.finditer(pattern, text, re.IGNORECASE):
+                # Plain "服装" is the structured P服装 capability.
+                normalized = "P服装" if cargo_type == "服装" else cargo_type
+                matches.append((match.start(), normalized))
+        matches.sort(key=lambda item: item[0])
+        result: list[str] = []
+        for _, cargo_type in matches:
+            if cargo_type not in result:
+                result.append(cargo_type)
+        return result
 
     @classmethod
     def _find_weight_column_index(cls, raw: pd.DataFrame, header_row: int) -> int | None:
@@ -329,40 +366,22 @@ class XLSPipeline:
 
     @classmethod
     def _infer_cargo_type(cls, channel: str | None, accepted: str | None, headers: str = "") -> str | None:
-        """Infer cargo type while treating an explicit XLS cargo column as authoritative."""
+        """Infer legacy primary cargo type; structured capabilities live in supported_cargo_types."""
         if accepted:
             explicit = accepted.strip()
-            if "普货" in explicit and not any(term in explicit for term in ("带电", "纯电池", "液体", "膏体", "粉末")):
-                return "普货"
-            if explicit in {"P", "P货", "P服装", "仿牌", "敏货", "仿牌/敏货"}:
-                return "P"
-            if "纯电池" in explicit:
-                return "纯电池"
-            if "带电" in explicit:
-                return "带电"
-            if "液体" in explicit:
-                return "液体"
-            if "膏体" in explicit:
-                return "膏体"
-            if "粉末" in explicit:
-                return "粉末"
-            if "特货" in explicit:
-                return "特货"
+            supported = cls._parse_supported_cargo_types(explicit)
+            if supported:
+                return supported[0]
 
         text = f"{channel or ''} {accepted or ''} {headers}"
         if "纯电池" in text:
             return "纯电池"
         if "普货" in channel_or_empty(channel):
             return "普货"
-        # XLS 中 P 统一表示仿牌/敏感货，不能再解释成“P服装”。
         if re.search(r"(?:^|[-_\s])P(?:$|[-_\s]|服装|货|敏感|仿牌)", text, re.IGNORECASE):
             return "P"
         if "P货" in text or "P服装" in text or "服装" in text:
-            return "P"
-        if "普货" in headers and "带电" not in channel_or_empty(channel):
-            return "普货"
-        if "不接带电" in text and "普货" in text:
-            return "普货"
+            return "P服装"
         if "带电" in text:
             return "带电"
         if "液体" in text:
@@ -432,11 +451,12 @@ class XLSPipeline:
             if not weight:
                 continue
             service_type = self._text(row.iloc[0])
+            cargo = self._infer_cargo_type(service_type, None)
             for col in range(2, raw.shape[1]):
                 country = countries[col]
                 if not country:
                     continue
-                results.append(ChannelRate(sheet_name=sheet_name, channel_name=sheet_name, countries=country, cargo_type=self._infer_cargo_type(service_type, None), weight_min=weight[0], weight_max=weight[1], price_per_kg=self._number(row.iloc[col])))
+                results.append(ChannelRate(sheet_name=sheet_name, channel_name=sheet_name, countries=country, cargo_type=cargo, supported_cargo_types=(cargo,) if cargo else (), weight_min=weight[0], weight_max=weight[1], price_per_kg=self._number(row.iloc[col])))
         return results
 
     @staticmethod
