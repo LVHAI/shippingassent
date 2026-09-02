@@ -123,6 +123,45 @@ def test_graph_end_to_end_with_followup_data(monkeypatch):
     assert calls == ["寄到日本多少钱", "2kg衣服"]
 
 
+def test_parse_intent_does_not_reuse_cargo_from_completed_previous_turn(monkeypatch):
+    monkeypatch.setattr(nodes, "parse_intent", lambda text: {
+        "intent_type": "rate_query",
+        "country": "美国",
+        "weight": 3.0,
+        "cargo_type": None,
+        "missing_params": ["cargo_type"],
+    })
+    result = nodes.parse_intent_node({
+        "user_input": "寄美国，3公斤",
+        "route": "ready",
+        "country": "美国",
+        "weight": 3.0,
+        "cargo_type": "P",
+    })
+    assert result["cargo_type"] is None
+    assert result["missing_params"] == ["cargo_type"]
+
+
+def test_parse_intent_reuses_context_only_for_followup(monkeypatch):
+    monkeypatch.setattr(nodes, "parse_intent", lambda text: {
+        "intent_type": "followup",
+        "country": None,
+        "weight": 3.0,
+        "cargo_type": "普货",
+        "missing_params": [],
+    })
+    result = nodes.parse_intent_node({
+        "user_input": "3公斤普货",
+        "route": "ask_followup",
+        "country": "美国",
+        "weight": None,
+        "cargo_type": None,
+    })
+    assert result["country"] == "美国"
+    assert result["cargo_type"] == "普货"
+    assert result["missing_params"] == []
+
+
 def test_graph_real_rate_engine_returns_quote_for_us_5kg(tmp_path, monkeypatch):
     db = tmp_path / "shipping.db"
     init_db(db)
