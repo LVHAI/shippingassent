@@ -14,7 +14,8 @@ logger = get_logger("tools")
 
 CARGO_TYPE_SYNONYMS: dict[str, str] = {
     "普通商品": "普货", "没特殊要求": "普货", "一般货物": "普货",
-    "衣服": "P服装", "服装": "P服装", "鞋子": "P服装", "包包": "P服装",
+    "P": "P", "P货": "P", "P服装": "P", "仿牌": "P", "敏货": "P", "仿牌/敏货": "P",
+    "衣服": "P", "服装": "P", "鞋子": "P", "包包": "P",
     "电子产品": "带电", "手机": "带电", "带电池": "带电", "笔记本": "带电",
     "化妆品": "膏体", "面霜": "膏体", "护肤品": "膏体", "香水": "液体",
     "酒精液体": "液体", "纯电池": "纯电池", "充电宝": "纯电池", "粉末": "粉末", "粉状物": "粉末",
@@ -55,7 +56,8 @@ def _country_matches(countries: str | None, country: str) -> bool:
 def _cargo_matches(channel_cargo: str | None, requested_cargo: str) -> bool:
     if not channel_cargo or not requested_cargo:
         return False
-    channel, requested = channel_cargo.strip(), requested_cargo.strip()
+    channel = channel_cargo.strip()
+    requested = normalize_cargo_type(requested_cargo)
     return channel == requested if requested != "普货" else channel == "普货"
 
 
