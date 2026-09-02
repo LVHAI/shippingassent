@@ -23,12 +23,17 @@ def parse_intent_node(state: ShippingState) -> dict[str, Any]:
     if cargo_type:
         cargo_type = normalize_cargo_type(cargo_type)
 
-    intent_type = result.get("intent_type", "chitchat")
+    parsed_intent = result.get("intent_type", "chitchat")
     country = result.get("country") or state.get("country")
     weight = result.get("weight") if result.get("weight") is not None else state.get("weight")
     cargo_type = cargo_type or state.get("cargo_type")
 
-    if intent_type in {"rate_query", "mixed"}:
+    is_followup = state.get("route") == "ask_followup" and parsed_intent in {
+        "rate_query", "followup", "chitchat"
+    } and any(value is not None for value in (result.get("country"), result.get("weight"), result.get("cargo_type")))
+    intent_type = "followup" if is_followup else parsed_intent
+
+    if intent_type in {"rate_query", "mixed", "followup"}:
         missing_params: list[str] = []
         if not country:
             missing_params.append("country")
@@ -50,7 +55,7 @@ def parse_intent_node(state: ShippingState) -> dict[str, Any]:
 
 def check_params_node(state: ShippingState) -> dict[str, Any]:
     """Mark the state ready only when rate parameters are complete."""
-    if state.get("intent_type") in {"rate_query", "mixed"} and state.get("missing_params"):
+    if state.get("intent_type") in {"rate_query", "mixed", "followup"} and state.get("missing_params"):
         return {"route": "ask_followup"}
     return {"route": "ready"}
 
