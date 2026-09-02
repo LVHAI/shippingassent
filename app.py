@@ -9,12 +9,21 @@ from pathlib import Path
 from typing import Any
 
 import streamlit as st
+from dotenv import load_dotenv
 
 from agent.graph import run_once
 from data_pipeline.milvus_loader import MILVUS_DB_PATH, MilvusRuleLoader, load_rules_from_xls
 from data_pipeline.sqlite_loader import DB_PATH, load_from_xls
 
+ROOT = Path(__file__).resolve().parent
 PAGE_NAMES = ["聊天", "数据导入", "渠道浏览"]
+
+
+def load_environment() -> bool:
+    return bool(load_dotenv(ROOT / ".env"))
+
+
+load_environment()
 
 
 def run_agent(user_input: str, conversation_id: str, previous_state: dict[str, Any] | None = None) -> dict[str, Any]:
