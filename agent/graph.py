@@ -77,14 +77,14 @@ def _initial_state(user_input: str, previous_state: ShippingState | None) -> Shi
             "country": previous_state.get("country"),
             "weight": previous_state.get("weight"),
             "cargo_type": previous_state.get("cargo_type"),
+            "cargo_types": previous_state.get("cargo_types"),
         }
-    # A completed turn must not leak its parsed parameters into an independent query.
-    # Explicit nulls are required because LangGraph merges partial state with the checkpoint.
     return {
         "user_input": user_input,
         "country": None,
         "weight": None,
         "cargo_type": None,
+        "cargo_types": None,
         "route": None,
     }
 

@@ -17,6 +17,7 @@ FOLLOWUP_LABELS = {
     "weight": "货物重量（KG）",
     "cargo_type": "货物类型",
 }
+DEFAULT_RATE_CARGO_TYPES = ["普货", "P"]
 
 
 def _start(node: str, state: ShippingState) -> float:
@@ -48,14 +49,21 @@ def parse_intent_node(state: ShippingState) -> dict[str, Any]:
         intent_type = "followup" if is_followup else parsed_intent
 
         if intent_type in {"rate_query", "mixed", "followup"}:
+            cargo_types = result.get("cargo_types")
+            if cargo_type:
+                cargo_types = [cargo_type]
+            elif cargo_types:
+                cargo_types = [normalize_cargo_type(value) for value in cargo_types if value]
+            else:
+                cargo_types = list(DEFAULT_RATE_CARGO_TYPES)
+
             missing_params: list[str] = []
             if not country:
                 missing_params.append("country")
             if weight is None:
                 missing_params.append("weight")
-            if not cargo_type:
-                missing_params.append("cargo_type")
         else:
+            cargo_types = None
             missing_params = []
 
         update = {
@@ -63,6 +71,7 @@ def parse_intent_node(state: ShippingState) -> dict[str, Any]:
             "country": country,
             "weight": weight,
             "cargo_type": cargo_type,
+            "cargo_types": cargo_types,
             "missing_params": missing_params,
         }
         _end("parse_intent", started, update)
@@ -86,17 +95,48 @@ def check_params_node(state: ShippingState) -> dict[str, Any]:
         raise
 
 
+def _merge_rate_results(rate_results: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Deduplicate rows when a channel matches more than one cargo query."""
+    merged: list[dict[str, Any]] = []
+    seen: set[tuple[Any, ...]] = set()
+    for item in rate_results:
+        key = (
+            item.get("id"),
+            item.get("channel_name"),
+            item.get("weight_min"),
+            item.get("weight_max"),
+            item.get("total_price"),
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        merged.append(item)
+    merged.sort(key=lambda item: (item.get("total_price") is None, item.get("total_price") or 0, item.get("channel_name") or ""))
+    return merged
+
+
 def calculate_rate_node(state: ShippingState) -> dict[str, Any]:
     started = _start("calculate_rate", state)
     try:
         country = state.get("country")
         weight = state.get("weight")
         cargo_type = state.get("cargo_type")
-        if not country or weight is None or not cargo_type:
+        cargo_types = state.get("cargo_types")
+        if cargo_type:
+            query_types = [normalize_cargo_type(cargo_type)]
+        elif cargo_types:
+            query_types = [normalize_cargo_type(value) for value in cargo_types if value]
+        else:
+            query_types = list(DEFAULT_RATE_CARGO_TYPES)
+
+        if not country or weight is None or not query_types:
             update = {"rate_results": []}
         else:
-            update = {"rate_results": calculate_rate(country, weight, cargo_type)}
-        logger.info("rate.result count=%d country=%s weight=%s cargo_type=%s", len(update["rate_results"]), country, weight, cargo_type)
+            results: list[dict[str, Any]] = []
+            for query_type in query_types:
+                results.extend(calculate_rate(country, weight, query_type))
+            update = {"rate_results": _merge_rate_results(results)}
+        logger.info("rate.result count=%d country=%s weight=%s cargo_types=%s", len(update["rate_results"]), country, weight, query_types)
         _end("calculate_rate", started, update)
         return update
     except Exception:
@@ -115,9 +155,6 @@ def search_rules_node(state: ShippingState) -> dict[str, Any]:
         logger.info("rules.result count=%d", len(update["rule_results"]))
         _end("search_rules", started, update)
         return update
-    except Exception:
-        logger.exception("node.failed name=search_rules")
-        raise
 
 
 def _dashscope_format(prompt: str) -> str:
@@ -133,13 +170,7 @@ def _dashscope_format(prompt: str) -> str:
             api_key=api_key,
             model="qwen3.7-max",
             messages=[
-                {
-                    "role": "system",
-                    "content": (
-                        "你是运费助手回复格式化器。只根据给定的报价和规则数据组织自然语言。"
-                        "不得修改报价数字、渠道、时效或规则原文；没有依据的数据不得补充。"
-                    ),
-                },
+                {"role": "system", "content": "你是运费助手回复格式化器。只根据给定的报价和规则数据组织自然语言。不得修改报价数字、渠道、时效或规则原文；没有依据的数据不得补充。"},
                 {"role": "user", "content": prompt},
             ],
             result_format="message",
@@ -256,8 +287,6 @@ def format_rate_response(
 ) -> str:
     if not rate_results:
         return "抱歉，未找到符合条件的渠道"
-
-    # 报价结果是结构化数据，直接按渠道组织，避免 LLM 在多渠道/多重量段时遗漏渠道。
     return _deterministic_rate_lines(rate_results)
 
 
@@ -271,7 +300,6 @@ def generate_response_node(state: ShippingState) -> dict[str, Any]:
         rate_results = state.get("rate_results", [])
         rule_results = state.get("rule_results", [])
         intent_type = state.get("intent_type", "chitchat")
-
         if intent_type == "chitchat":
             response = _chitchat_response()
         elif intent_type == "rule_query":
@@ -282,7 +310,6 @@ def generate_response_node(state: ShippingState) -> dict[str, Any]:
             response = f"报价：\n{rate_text}\n\n规则：\n{rule_text}"
         else:
             response = format_rate_response(rate_results)
-
         update = {"response": response, "rate_results": rate_results, "rule_results": rule_results}
         logger.info("response.result chars=%d intent=%s", len(response), intent_type)
         _end("generate_response", started, update)
