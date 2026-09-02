@@ -97,6 +97,28 @@ def test_dashscope_embedding_client_batches_inputs_at_provider_limit(monkeypatch
     assert calls[1] == ["rule-20"]
 
 
+def test_dashscope_embedding_client_respects_current_provider_limit_of_ten(monkeypatch):
+    calls = []
+
+    class FakeEmbedding:
+        @staticmethod
+        def call(**kwargs):
+            calls.append(kwargs["input"])
+            return {"status_code": 200, "output": {"embeddings": [{"embedding": [0.0] * 1024} for _ in kwargs["input"]]}}
+
+    class FakeDashScope:
+        TextEmbedding = FakeEmbedding
+
+    monkeypatch.setitem(__import__("sys").modules, "dashscope", FakeDashScope())
+    client = DashScopeEmbeddingClient(api_key="test")
+
+    vectors = client.embed([f"rule-{i}" for i in range(21)])
+
+    assert len(vectors) == 21
+    assert all(len(batch) <= 10 for batch in calls)
+    assert [len(batch) for batch in calls] == [10, 10, 1]
+
+
 def test_real_workbook_extracts_rules_from_required_sheets():
     pipeline = XLSPipeline(XLS_PATH)
     rate_rules = []
