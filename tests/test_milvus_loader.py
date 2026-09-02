@@ -1,88 +1,88 @@
 from pathlib import Path
 
-import pytest
+import pandas as pd
 
-from data_pipeline.milvus_loader import MilvusRuleLoader
+from data_pipeline.xls_parser import ChannelRule, XLSPipeline
 
-
-class FakeEmbedding:
-    def __init__(self):
-        self.calls = []
-
-    def embed(self, texts):
-        self.calls.append(list(texts))
-        return [[float(i)] * 1024 for i, _ in enumerate(texts)]
+ROOT = Path(__file__).resolve().parents[1]
+XLS_PATH = ROOT / "20260713.xls"
 
 
-def test_collection_schema_contains_required_rule_fields(tmp_path):
-    loader = MilvusRuleLoader(uri=tmp_path / "rules.db")
-    loader.create_collection()
+def _pipeline(monkeypatch, sheets):
+    pipeline = object.__new__(XLSPipeline)
+    pipeline._excel = object()
+    pipeline.sheet_names = list(sheets)
 
-    fields = {field.name: field for field in loader.client.describe_collection(loader.collection_name)["fields"]}
-    assert {"id", "embedding", "text", "sheet_name", "channel_name", "rule_category", "metadata"} <= fields.keys()
-    assert fields["embedding"].params["dim"] == 1024
+    def read_excel(_excel, sheet_name, header=None):
+        return sheets[sheet_name].copy()
 
-
-def test_load_rules_embeds_and_inserts_channel_rules(tmp_path):
-    loader = MilvusRuleLoader(uri=tmp_path / "rules.db", embedding_client=FakeEmbedding())
-    loader.create_collection()
-
-    rules = [
-        {
-            "sheet_name": "美国专线小包",
-            "channel_name": "美国专线小包",
-            "rule_category": "尺寸",
-            "content": "最大尺寸55*40*35CM",
-        },
-        {
-            "sheet_name": "易德赔付标准",
-            "channel_name": None,
-            "rule_category": "赔偿",
-            "content": "丢失按规定赔偿",
-        },
-    ]
-
-    count = loader.load_rules(rules)
-
-    assert count == 2
-    assert loader.client.get(loader.collection_name, ids=[0, 1])
+    monkeypatch.setattr(pd, "read_excel", read_excel)
+    return pipeline
 
 
-def test_search_rules_supports_metadata_filters(tmp_path):
-    embedding = FakeEmbedding()
-    loader = MilvusRuleLoader(uri=tmp_path / "rules.db", embedding_client=embedding)
-    loader.create_collection()
-    loader.load_rules([
-        {"sheet_name": "美国专线小包", "channel_name": "美国", "rule_category": "尺寸", "content": "美国尺寸限制"},
-        {"sheet_name": "易德赔付标准", "channel_name": None, "rule_category": "赔偿", "content": "赔偿标准"},
+def test_channel_rule_model_contains_normalized_rule_fields():
+    rule = ChannelRule(sheet_name="美国专线小包", channel_name="美国专线小包", rule_category="申报", content="申报价值不得超过规定金额")
+    assert rule.sheet_name == "美国专线小包"
+    assert rule.channel_name == "美国专线小包"
+    assert rule.rule_category == "申报"
+    assert rule.content == "申报价值不得超过规定金额"
+
+
+def test_extract_rules_from_rate_sheet_reads_rows_after_rate_table(monkeypatch):
+    raw = pd.DataFrame([
+        ["美国专线小包"],
+        ["渠道", "重量段", "运费/KG", "处理费"],
+        ["ED美线免税小包-普货(AQ)", "0.05-0.1KG", 96, 25],
+        [None, "0.1-0.2KG", 96, 25],
+        [None, None, None, None],
+        ["申报要求", "单票申报价值不能超过规定金额", None, None],
+        ["赔偿标准", "丢失按规定赔偿", None, None],
     ])
-
-    results = loader.search("尺寸限制", top_k=3, sheet_name="美国专线小包")
-
-    assert results
-    assert all(item["sheet_name"] == "美国专线小包" for item in results)
-    assert results[0]["text"] == "美国尺寸限制"
-
-
-def test_embedding_failure_has_actionable_error(tmp_path):
-    class BrokenEmbedding:
-        def embed(self, texts):
-            raise RuntimeError("DashScope unavailable")
-
-    loader = MilvusRuleLoader(uri=tmp_path / "rules.db", embedding_client=BrokenEmbedding())
-    with pytest.raises(RuntimeError, match="DashScope unavailable"):
-        loader.embed_texts(["赔偿标准"])
+    pipeline = _pipeline(monkeypatch, {"美国专线小包": raw})
+    rules = pipeline.extract_rules_from_rate_sheet("美国专线小包")
+    assert len(rules) == 2
+    assert all(isinstance(rule, ChannelRule) for rule in rules)
+    assert rules[0].channel_name == "ED美线免税小包-普货(AQ)"
+    assert rules[0].rule_category == "申报"
+    assert "申报价值" in rules[0].content
+    assert rules[1].rule_category == "赔偿"
 
 
-def test_search_rules_tool_delegates_to_loader(monkeypatch):
-    from agent import tools
+def test_extract_standalone_rules_classifies_and_filters_headers(monkeypatch):
+    raw = pd.DataFrame([
+        ["规则类别", "规则内容"],
+        ["赔付标准", "包裹丢失按照货值进行赔偿"],
+        ["", ""],
+        ["航空禁运物品", "锂电池及危险品禁止运输"],
+        ["", ""],
+    ])
+    pipeline = _pipeline(monkeypatch, {"易德赔付标准": raw})
+    rules = pipeline.extract_rules_from_standalone_sheet("易德赔付标准")
+    assert len(rules) == 2
+    assert {rule.rule_category for rule in rules} == {"赔偿", "禁运"}
+    assert all(rule.channel_name is None for rule in rules)
+    assert all(rule.content not in {"规则类别", "规则内容"} for rule in rules)
 
-    class FakeLoader:
-        def search(self, query, top_k=3, sheet_name=None, rule_category=None):
-            return [{"text": query, "sheet_name": sheet_name, "rule_category": rule_category}]
 
-    monkeypatch.setattr(tools, "_get_rule_loader", lambda: FakeLoader())
+def test_rule_category_supports_all_required_categories():
+    cases = {
+        "赔偿": "丢失按照规定赔偿", "禁运": "航空禁运物品禁止运输", "尺寸": "单件尺寸不得超过限制", "退件": "退件产生额外费用",
+        "申报": "申报价值需要如实填写", "安检": "货物需要通过安检", "时效": "参考时效为7-15天", "其他": "请提前确认相关要求",
+    }
+    for expected, content in cases.items():
+        assert XLSPipeline._classify_rule_category(content) == expected
 
-    result = tools.search_rules("什么东西不能寄", top_k=2, rule_category="禁运")
 
-    assert result == [{"text": "什么东西不能寄", "sheet_name": None, "rule_category": "禁运"}]
+def test_real_workbook_extracts_rules_from_required_sheets():
+    pipeline = XLSPipeline(XLS_PATH)
+    rate_rules = []
+    for sheet_name in ("美国专线小包", "日本专线小包"):
+        rate_rules.extend(pipeline.extract_rules_from_rate_sheet(sheet_name))
+    standalone_rules = []
+    for sheet_name in ("易德赔付标准", "退费额外费要求", "航空禁运物品"):
+        if sheet_name in pipeline.sheet_names:
+            standalone_rules.extend(pipeline.extract_rules_from_standalone_sheet(sheet_name))
+    assert rate_rules, "required rate-sheet rules were not extracted"
+    assert standalone_rules, "required standalone rules were not extracted"
+    assert all(rule.content.strip() for rule in rate_rules + standalone_rules)
+    assert {rule.rule_category for rule in rate_rules + standalone_rules} <= set(XLSPipeline.RULE_CATEGORIES) | {"其他"}
