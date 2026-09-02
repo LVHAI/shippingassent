@@ -11,8 +11,9 @@ class ShippingState(TypedDict, total=False):
     country: str | None
     weight: float | None
     cargo_type: str | None
+    cargo_types: list[str] | None
     missing_params: list[str]
-    route: str
+    route: str | None
     rate_results: list[dict[str, Any]]
     rule_results: list[dict[str, Any]]
     response: str
