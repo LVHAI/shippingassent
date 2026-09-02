@@ -55,8 +55,8 @@ class XLSPipeline:
         data = data.dropna(how="all")
 
         channel_col = self._find_col(data.columns, "渠道")
-        country_col = self._find_col(data.columns, "国家", "目的地")
-        cargo_col = self._find_col(data.columns, "接货类型", "货物类型", "类型")
+        country_col = self._find_col(data.columns, "国家")
+        cargo_col = self._find_col(data.columns, "接货类型", "货物类型")
         weight_col = self._find_col(data.columns, "重量", "重量段")
         price_col = self._find_col(data.columns, "运费/KG", "运费", "价格/KG")
         handling_col = self._find_col(data.columns, "处理费")
@@ -70,14 +70,16 @@ class XLSPipeline:
         for col in fill_cols:
             data[col] = data[col].ffill()
 
+        header_cargo = " ".join(str(c) for c in data.columns)
         results: list[ChannelRate] = []
         for _, row in data.iterrows():
             weight = self._parse_weight_range(row.get(weight_col)) if weight_col else None
             if not weight:
                 continue
-            channel = self._text(row.get(channel_col)) if channel_col else None
-            country = self._text(row.get(country_col)) if country_col else None
-            cargo = self._infer_cargo_type(channel, self._text(row.get(cargo_col)) if cargo_col else None)
+            channel = self._text(row.get(channel_col)) if channel_col else sheet_name
+            country = self._text(row.get(country_col)) if country_col else self._infer_country(sheet_name, channel)
+            accepted = self._text(row.get(cargo_col)) if cargo_col else None
+            cargo = self._infer_cargo_type(channel, accepted, header_cargo)
             price = self._number(row.get(price_col)) if price_col else None
             handling = self._number(row.get(handling_col)) if handling_col else None
             first_weight = self._weight_from_header(first_col)
@@ -152,9 +154,7 @@ class XLSPipeline:
         if not nums:
             return None
         values = [float(n) for n in nums[:2]]
-        if len(values) == 1:
-            return values[0], values[0]
-        return values[0], values[1]
+        return (values[0], values[-1])
 
     @classmethod
     def _number(cls, value: Any) -> float | None:
@@ -172,14 +172,16 @@ class XLSPipeline:
         return float(match.group(1)) if match else None
 
     @classmethod
-    def _infer_cargo_type(cls, channel: str | None, accepted: str | None) -> str | None:
-        text = f"{channel or ''} {accepted or ''}"
+    def _infer_cargo_type(cls, channel: str | None, accepted: str | None, headers: str = "") -> str | None:
+        text = f"{channel or ''} {accepted or ''} {headers}"
         if "纯电池" in text:
             return "纯电池"
-        if "带电" in text:
-            return "带电"
+        if "不接带电" in text and "普货" in text:
+            return "普货"
         if "P货" in text or "P服装" in text or "服装" in text:
             return "P货"
+        if "带电" in text:
+            return "带电"
         if "液体" in text:
             return "液体"
         if "膏体" in text:
@@ -193,23 +195,32 @@ class XLSPipeline:
         return None
 
     @classmethod
+    def _infer_country(cls, sheet_name: str, channel: str | None) -> str | None:
+        text = f"{channel or ''} {sheet_name}"
+        for country in ("美国", "日本", "巴西", "加拿大", "墨西哥", "澳洲", "英国", "欧洲"):
+            if country in text:
+                return country
+        return None
+
+    @classmethod
     def _is_zone_table(cls, raw: pd.DataFrame, header_row: int) -> bool:
         row = " ".join(cls._text(v) or "" for v in raw.iloc[header_row].tolist())
-        return "区域" in row and "重量段" in row
+        next_row = " ".join(cls._text(v) or "" for v in raw.iloc[header_row + 1].tolist()) if header_row + 1 < len(raw) else ""
+        return ("区域" in row and "重量段" in row) or ("区域" in row and "重量段" in next_row)
 
     def _parse_zone_table(self, raw: pd.DataFrame, header_row: int, sheet_name: str) -> list[ChannelRate]:
-        zone_row = header_row + 1
-        if zone_row >= len(raw):
+        country_row = header_row + 1
+        if country_row >= len(raw):
             return []
-        countries = [self._text(v) for v in raw.iloc[zone_row].tolist()]
+        countries = [self._text(v) for v in raw.iloc[country_row].tolist()]
         results: list[ChannelRate] = []
-        for idx in range(zone_row + 1, len(raw)):
+        for idx in range(country_row + 1, len(raw)):
             row = raw.iloc[idx]
-            weight = self._parse_weight_range(row.iloc[1])
+            weight = self._parse_weight_range(row.iloc[0])
             if not weight:
                 continue
             service_type = self._text(row.iloc[0])
-            for col in range(2, raw.shape[1]):
+            for col in range(1, raw.shape[1]):
                 country = countries[col]
                 if not country:
                     continue
