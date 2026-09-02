@@ -179,6 +179,8 @@ class XLSPipeline:
             return "纯电池"
         if "P货" in text or "P服装" in text or "服装" in text:
             return "P货"
+        if "普货" in headers and "带电" not in channel_or_empty(channel):
+            return "普货"
         if "不接带电" in text and "普货" in text:
             return "普货"
         if "带电" in text:
@@ -242,3 +244,7 @@ class XLSPipeline:
             return None
         text = str(value).strip()
         return text or None
+
+
+def channel_or_empty(channel: str | None) -> str:
+    return channel or ""
