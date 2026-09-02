@@ -8,7 +8,7 @@ from typing import Any
 
 
 MODEL_NAME = "qwen3.7-max"
-VALID_INTENTS = {"rate_query", "rule_query", "mixed", "chitchat"}
+VALID_INTENTS = {"rate_query", "rule_query", "mixed", "followup", "chitchat"}
 
 SAFE_FALLBACK: dict[str, Any] = {
     "intent_type": "chitchat",
@@ -20,11 +20,12 @@ SAFE_FALLBACK: dict[str, Any] = {
 
 SYSTEM_PROMPT = """你是运费助手的意图提取器。只输出一个 JSON 对象，不要 Markdown、解释或额外文本。
 字段必须为：intent_type、country、weight、cargo_type、missing_params。
-intent_type 只能是 rate_query、rule_query、mixed、chitchat。
+intent_type 只能是 rate_query、rule_query、mixed、followup、chitchat。
 国家提取用户明确提到的目的国家；没有则为 null。
 weight 必须统一为 KG 的数字；g/克除以1000，斤乘以0.5；没有则为 null。
 cargo_type 提取用户明确描述的货物类型；没有则为 null。
-missing_params 仅针对 rate_query 或 mixed，按 country、weight、cargo_type 顺序列出缺失字段；rule_query 和 chitchat 必须为空数组。
+missing_params 仅针对 rate_query 或 mixed，按 country、weight、cargo_type 顺序列出缺失字段；rule_query、followup 和 chitchat 必须为空数组。
+followup 表示用户正在补充上一轮已经提出的缺失信息，例如“2kg衣服”“普货”“5公斤”。
 
 示例：
 用户：美国5kg普货多少钱
@@ -33,6 +34,8 @@ missing_params 仅针对 rate_query 或 mixed，按 country、weight、cargo_typ
 输出：{"intent_type":"rate_query","country":"巴西","weight":null,"cargo_type":null,"missing_params":["weight","cargo_type"]}
 用户：赔偿标准是什么
 输出：{"intent_type":"rule_query","country":null,"weight":null,"cargo_type":null,"missing_params":[]}
+用户：2kg衣服
+输出：{"intent_type":"followup","country":null,"weight":2.0,"cargo_type":"衣服","missing_params":[]}
 用户：你好
 输出：{"intent_type":"chitchat","country":null,"weight":null,"cargo_type":null,"missing_params":[]}
 """
