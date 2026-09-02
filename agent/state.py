@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import TypedDict
+from typing import Any, TypedDict
 
 
 class ShippingState(TypedDict, total=False):
@@ -12,3 +12,6 @@ class ShippingState(TypedDict, total=False):
     weight: float | None
     cargo_type: str | None
     missing_params: list[str]
+    route: str
+    rate_results: list[dict[str, Any]]
+    response: str
