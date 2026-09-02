@@ -70,7 +70,7 @@ class XLSPipeline:
         for col in fill_cols:
             data[col] = data[col].ffill()
 
-        header_cargo = " ".join(str(c) for c in data.columns)
+        header_text = " ".join(str(c) for c in data.columns)
         results: list[ChannelRate] = []
         for _, row in data.iterrows():
             weight = self._parse_weight_range(row.get(weight_col)) if weight_col else None
@@ -79,7 +79,8 @@ class XLSPipeline:
             channel = self._text(row.get(channel_col)) if channel_col else sheet_name
             country = self._text(row.get(country_col)) if country_col else self._infer_country(sheet_name, channel)
             accepted = self._text(row.get(cargo_col)) if cargo_col else None
-            cargo = self._infer_cargo_type(channel, accepted, header_cargo)
+            selected_price_header = str(price_col or "")
+            cargo = self._infer_cargo_type(channel, accepted, f"{header_text} {selected_price_header}")
             price = self._number(row.get(price_col)) if price_col else None
             handling = self._number(row.get(handling_col)) if handling_col else None
             first_weight = self._weight_from_header(first_col)
@@ -154,7 +155,7 @@ class XLSPipeline:
         if not nums:
             return None
         values = [float(n) for n in nums[:2]]
-        return (values[0], values[-1])
+        return values[0], values[-1]
 
     @classmethod
     def _number(cls, value: Any) -> float | None:
@@ -176,10 +177,10 @@ class XLSPipeline:
         text = f"{channel or ''} {accepted or ''} {headers}"
         if "纯电池" in text:
             return "纯电池"
-        if "不接带电" in text and "普货" in text:
-            return "普货"
         if "P货" in text or "P服装" in text or "服装" in text:
             return "P货"
+        if "不接带电" in text and "普货" in text:
+            return "普货"
         if "带电" in text:
             return "带电"
         if "液体" in text:
@@ -216,11 +217,11 @@ class XLSPipeline:
         results: list[ChannelRate] = []
         for idx in range(country_row + 1, len(raw)):
             row = raw.iloc[idx]
-            weight = self._parse_weight_range(row.iloc[0])
+            weight = self._parse_weight_range(row.iloc[1])
             if not weight:
                 continue
             service_type = self._text(row.iloc[0])
-            for col in range(1, raw.shape[1]):
+            for col in range(2, raw.shape[1]):
                 country = countries[col]
                 if not country:
                     continue
