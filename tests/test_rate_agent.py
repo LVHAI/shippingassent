@@ -1,4 +1,5 @@
 import agent.nodes as nodes
+from agent.tools import _cargo_matches
 from data_pipeline.sqlite_loader import init_db, load_rates
 from data_pipeline.xls_parser import ChannelRate
 
@@ -185,6 +186,19 @@ def test_parse_intent_reuses_context_only_for_followup(monkeypatch):
     assert result["cargo_type"] == "普货"
     assert result["cargo_types"] == ["普货"]
     assert result["missing_params"] == []
+
+
+def test_generic_counterfeit_query_matches_specialized_p_clothing_channel():
+    assert _cargo_matches(
+        "P服装",
+        "仿牌",
+        "ED以色列专线到门-P鞋服(YZ)",
+        ["P服装", "鞋子"],
+    )
+
+
+def test_explicit_p_clothing_query_does_not_match_generic_p_channel():
+    assert not _cargo_matches("P", "P服装", "普通敏货专线", ["P"])
 
 
 def test_graph_end_to_end_with_followup_data(monkeypatch):
