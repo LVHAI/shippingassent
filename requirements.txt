@@ -6,3 +6,4 @@ pandas
 xlrd
 streamlit
 python-dotenv
+pytest
