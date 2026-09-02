@@ -96,8 +96,11 @@ def test_graph_end_to_end_with_followup_data(monkeypatch):
 
     expected = [{"channel_name": "日本普货佐川", "total_price": 119.0, "transit_time": "4-7天"}]
     monkeypatch.setattr(graph, "parse_intent_node", fake_parse)
-    monkeypatch.setattr(graph, "calculate_rate", lambda country, weight, cargo_type: expected)
-    monkeypatch.setattr(graph, "format_rate_response", lambda results: "日本普货佐川：119元，4-7天")
+    monkeypatch.setattr(graph, "calculate_rate_node", lambda state: {"rate_results": expected})
+    monkeypatch.setattr(graph, "generate_response_node", lambda state: {
+        "response": "日本普货佐川：119元，4-7天",
+        "rate_results": state["rate_results"],
+    })
 
     first = graph.run_once("寄到日本多少钱")
     second = graph.run_once("2kg衣服", first)
