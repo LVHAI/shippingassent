@@ -1,7 +1,7 @@
 langgraph
 langchain-core
 dashscope
-pymilvus[lite]
+pymilvus[milvus-lite]
 pandas
 xlrd
 streamlit
