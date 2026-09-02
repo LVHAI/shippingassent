@@ -49,8 +49,14 @@ def search_rules(query: str, top_k: int = 3, sheet_name: str | None = None, rule
     return _get_rule_loader().search(query=query, top_k=top_k, sheet_name=sheet_name, rule_category=rule_category)
 
 
-def _country_matches(countries: str | None, country: str) -> bool:
-    return bool(countries and country and country.strip().casefold() in countries.casefold())
+def _country_matches(countries: str | None, country: str, channel_name: str | None = None) -> bool:
+    """Match the country column, with channel-name fallback for sheets without a country cell."""
+    if not country:
+        return False
+    requested = country.strip().casefold()
+    if countries and requested in countries.casefold():
+        return True
+    return bool(channel_name and requested in str(channel_name).casefold())
 
 
 def _cargo_matches(channel_cargo: str | None, requested_cargo: str) -> bool:
@@ -103,7 +109,7 @@ def calculate_rate(country: str, weight: float, cargo_type: str) -> list[dict[st
     cargo_candidates = 0
     results: list[dict[str, Any]] = []
     for row in rows:
-        if not _country_matches(row["countries"], country):
+        if not _country_matches(row["countries"], country, row["channel_name"]):
             continue
         country_candidates += 1
         if not _cargo_matches(row["cargo_type"], cargo_type):
