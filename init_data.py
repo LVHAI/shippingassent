@@ -4,12 +4,19 @@ import argparse
 import time
 from pathlib import Path
 
+from dotenv import load_dotenv
+
 from data_pipeline.milvus_loader import MILVUS_DB_PATH, load_rules_from_xls
 from data_pipeline.sqlite_loader import DB_PATH, load_from_xls
 from data_pipeline.xls_parser import XLSPipeline
 
 ROOT = Path(__file__).resolve().parent
 DEFAULT_XLS = ROOT / "20260713.xls"
+
+
+def load_environment() -> bool:
+    """Load project environment variables from .env before initializing data."""
+    return bool(load_dotenv(ROOT / ".env"))
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -50,6 +57,7 @@ def run(
     started = time.perf_counter()
     xls = Path(xls_path)
     try:
+        load_environment()
         _validate_xls(xls)
         if dry_run:
             rate_count, rule_count = _parse_preview(xls, verbose)
