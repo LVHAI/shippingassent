@@ -26,6 +26,16 @@ def test_run_agent_uses_conversation_id(monkeypatch):
     assert calls == [("美国5kg普货多少钱", None, "conv-123")]
 
 
+def test_streamlit_app_loads_project_dotenv(monkeypatch):
+    import app
+
+    calls = []
+    monkeypatch.setattr(app, "load_dotenv", lambda *args, **kwargs: calls.append((args, kwargs)) or True)
+
+    assert app.load_environment() is True
+    assert calls == [((app.ROOT / ".env",), {})]
+
+
 def test_import_uploaded_xls_rebuilds_sqlite_and_milvus(monkeypatch, tmp_path: Path):
     import app
 
