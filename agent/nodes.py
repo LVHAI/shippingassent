@@ -174,14 +174,54 @@ def _dashscope_format(prompt: str) -> str:
         raise
 
 
+def _format_weight_band(item: dict[str, Any]) -> str:
+    minimum = item.get("weight_min")
+    maximum = item.get("weight_max")
+    if minimum is None and maximum is None:
+        first = item.get("first_weight")
+        return f"首重{first:g}kg" if first is not None else "重量未提供"
+    if maximum is None:
+        return f">={minimum:g}kg" if minimum is not None else "重量未提供"
+    return f"{minimum:g}-{maximum:g}kg"
+
+
+def _price_text(value: Any) -> str:
+    if value is None:
+        return "未提供"
+    return f"{float(value):.2f}".rstrip("0").rstrip(".")
+
+
 def _deterministic_rate_lines(rate_results: list[dict[str, Any]]) -> str:
-    lines = []
+    """Group every matched rate row by channel so no channel/band is silently dropped."""
+    grouped: dict[str, list[dict[str, Any]]] = {}
     for item in rate_results:
-        price = item["total_price"]
-        price_text = f"{price:.2f}".rstrip("0").rstrip(".")
-        transit = item.get("transit_time") or "未提供"
-        lines.append(f"{item['channel_name']}：{price_text}元，时效{transit}")
-    return "\n".join(lines)
+        grouped.setdefault(str(item.get("channel_name") or "未知渠道"), []).append(item)
+
+    sections: list[str] = []
+    for channel_name, items in grouped.items():
+        lines = [f"**{channel_name}**"]
+        for item in items:
+            band = _format_weight_band(item)
+            if item.get("price_per_kg") is not None:
+                price = f"{_price_text(item['price_per_kg'])}元/kg"
+                handling = f"，处理费{_price_text(item.get('handling_fee'))}元" if item.get("handling_fee") is not None else ""
+            elif item.get("first_weight_price") is not None:
+                price = f"首重{_price_text(item['first_weight_price'])}元"
+                additional = item.get("additional_weight_price")
+                handling = f"，续重{_price_text(additional)}元" if additional is not None else ""
+            else:
+                price = "价格未提供"
+                handling = ""
+            total = f"，总价{_price_text(item.get('total_price'))}元" if item.get("total_price") is not None else ""
+            lines.append(f"- {band}：{price}{handling}{total}")
+        transit = next((item.get("transit_time") for item in items if item.get("transit_time")), None)
+        carrier = next((item.get("carrier") for item in items if item.get("carrier")), None)
+        if transit:
+            lines.append(f"- 参考时效：{transit}")
+        if carrier:
+            lines.append(f"- 承运商：{carrier}")
+        sections.append("\n".join(lines))
+    return "\n\n".join(sections)
 
 
 def _deterministic_rule_lines(rule_results: list[dict[str, Any]]) -> str:
@@ -217,18 +257,7 @@ def format_rate_response(
     if not rate_results:
         return "抱歉，未找到符合条件的渠道"
 
-    prompt = (
-        "请将下面的确定性报价整理成简洁中文回复。报价中的渠道名、价格和时效必须原样保留，"
-        "不得自行推算或改写数值。\n\n报价数据：\n"
-        + json.dumps(rate_results, ensure_ascii=False)
-    )
-    try:
-        text = llm_call(prompt) if llm_call is not None else _dashscope_format(prompt)
-        if _llm_response_is_faithful(text, rate_results):
-            return text.strip()
-        logger.warning("response.format.rejected reason=unfaithful_llm_output")
-    except Exception:
-        logger.exception("response.format.fallback")
+    # 报价结果是结构化数据，直接按渠道组织，避免 LLM 在多渠道/多重量段时遗漏渠道。
     return _deterministic_rate_lines(rate_results)
 
 
