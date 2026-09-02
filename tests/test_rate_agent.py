@@ -1,4 +1,6 @@
 import agent.nodes as nodes
+from data_pipeline.sqlite_loader import init_db, load_rates
+from data_pipeline.xls_parser import ChannelRate
 
 
 def test_check_params_node_routes_complete_state_to_ready():
@@ -108,3 +110,41 @@ def test_graph_end_to_end_with_followup_data(monkeypatch):
     assert "日本普货佐川" in second["response"]
     assert second["rate_results"] == expected
     assert calls == ["寄到日本多少钱", "2kg衣服"]
+
+
+def test_graph_real_rate_engine_returns_quote_for_us_5kg(tmp_path, monkeypatch):
+    db = tmp_path / "shipping.db"
+    init_db(db)
+    load_rates([ChannelRate(
+        sheet_name="美国专线小包",
+        channel_name="美国普货快线",
+        countries="美国",
+        cargo_type="普货",
+        weight_min=0.05,
+        weight_max=10,
+        price_per_kg=20,
+        handling_fee=5,
+        transit_time="7-15天",
+    )], db)
+    monkeypatch.setenv("SHIPPING_DB_PATH", str(db))
+    monkeypatch.setattr(nodes, "parse_intent", lambda text: {
+        "intent_type": "rate_query",
+        "country": "美国",
+        "weight": 5.0,
+        "cargo_type": "普货",
+        "missing_params": [],
+    })
+    result = nodes.parse_intent_node({"user_input": "美国5kg普货多少钱"})
+    result.update(nodes.check_params_node(result))
+    result.update(nodes.calculate_rate_node(result))
+    assert result["rate_results"][0]["channel_name"] == "美国普货快线"
+    assert result["rate_results"][0]["total_price"] == 105
+    assert result["rate_results"][0]["transit_time"] == "7-15天"
+
+
+def test_graph_real_rate_engine_returns_apology_when_no_match(tmp_path, monkeypatch):
+    db = tmp_path / "shipping.db"
+    init_db(db)
+    monkeypatch.setenv("SHIPPING_DB_PATH", str(db))
+    result = nodes.generate_response_node({"rate_results": []})
+    assert result["response"] == "抱歉，未找到符合条件的渠道"
