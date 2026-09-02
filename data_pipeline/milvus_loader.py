@@ -14,6 +14,7 @@ ROOT = Path(__file__).resolve().parents[1]
 MILVUS_DB_PATH = ROOT / "vectordb" / "milvus_data.db"
 COLLECTION_NAME = "shipping_rules"
 EMBEDDING_DIM = 1024
+DASHSCOPE_BATCH_SIZE = 20
 
 
 class EmbeddingClient(Protocol):
@@ -35,31 +36,37 @@ class DashScopeEmbeddingClient:
         values = list(texts)
         if not values:
             return []
-        response = self._dashscope.TextEmbedding.call(
-            model="text-embedding-v4",
-            input=values,
-        )
-        status = getattr(response, "status_code", None)
-        if status not in (None, 200):
-            raise RuntimeError(f"DashScope embedding failed: {response}")
-
-        output = getattr(response, "output", None)
-        if output is None and isinstance(response, dict):
-            output = response.get("output")
-        embeddings = output.get("embeddings") if isinstance(output, dict) else getattr(output, "embeddings", None)
-        if not embeddings:
-            raise RuntimeError(f"DashScope embedding returned no embeddings: {response}")
 
         vectors: list[list[float]] = []
-        for item in embeddings:
-            vector = item.get("embedding") if isinstance(item, dict) else getattr(item, "embedding", None)
-            if vector is None:
-                raise RuntimeError(f"DashScope embedding item has no vector: {item}")
-            vectors.append([float(value) for value in vector])
-        if len(vectors) != len(values):
-            raise RuntimeError("DashScope embedding count does not match input count")
-        if any(len(vector) != EMBEDDING_DIM for vector in vectors):
-            raise RuntimeError(f"Expected {EMBEDDING_DIM}-dimensional embeddings")
+        for start in range(0, len(values), DASHSCOPE_BATCH_SIZE):
+            batch = values[start : start + DASHSCOPE_BATCH_SIZE]
+            response = self._dashscope.TextEmbedding.call(
+                model="text-embedding-v4",
+                input=batch,
+            )
+            status = getattr(response, "status_code", None)
+            if status not in (None, 200):
+                raise RuntimeError(f"DashScope embedding failed: {response}")
+
+            output = getattr(response, "output", None)
+            if output is None and isinstance(response, dict):
+                output = response.get("output")
+            embeddings = output.get("embeddings") if isinstance(output, dict) else getattr(output, "embeddings", None)
+            if not embeddings:
+                raise RuntimeError(f"DashScope embedding returned no embeddings: {response}")
+
+            batch_vectors: list[list[float]] = []
+            for item in embeddings:
+                vector = item.get("embedding") if isinstance(item, dict) else getattr(item, "embedding", None)
+                if vector is None:
+                    raise RuntimeError(f"DashScope embedding item has no vector: {item}")
+                batch_vectors.append([float(value) for value in vector])
+            if len(batch_vectors) != len(batch):
+                raise RuntimeError("DashScope embedding count does not match input count")
+            if any(len(vector) != EMBEDDING_DIM for vector in batch_vectors):
+                raise RuntimeError(f"Expected {EMBEDDING_DIM}-dimensional embeddings")
+            vectors.extend(batch_vectors)
+
         return vectors
 
 
@@ -237,6 +244,7 @@ def load_rules_from_xls(xls_path: str | Path, uri: str | Path | None = None) -> 
 
 __all__ = [
     "COLLECTION_NAME",
+    "DASHSCOPE_BATCH_SIZE",
     "EMBEDDING_DIM",
     "MILVUS_DB_PATH",
     "DashScopeEmbeddingClient",
