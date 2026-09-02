@@ -18,8 +18,7 @@ def test_us_three_kg_normal_cargo_returns_all_matching_channels(tmp_path: Path, 
         rate.channel_name
         for rate in parsed_rates
         if rate.channel_name
-        and rate.countries
-        and "美国" in rate.countries
+        and ("美国" in (rate.countries or "") or "美国" in rate.channel_name)
         and rate.cargo_type == "普货"
         and rate.weight_min <= 3.0 <= rate.weight_max
     }
