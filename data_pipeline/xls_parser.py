@@ -47,6 +47,22 @@ class XLSPipeline:
     }
     STANDALONE_RULE_SHEETS = ("易德赔付标准", "退费额外费要求", "航空禁运物品")
     PURE_HEADER_TERMS = ("规则类别", "规则内容", "内容", "说明", "备注", "物品名称", "类别", "序号", "国家", "渠道", "重量", "运费", "处理费", "尺寸要求", "参考时效")
+    COUNTRY_SHEET_MAPPINGS = (
+        ("巴西", "巴西"),
+        ("智利", "智利"),
+        ("秘鲁", "秘鲁"),
+        ("阿根廷", "阿根廷"),
+        ("以色列", "以色列"),
+        ("英国", "英国"),
+        ("美国", "美国"),
+        ("加拿大", "加拿大"),
+        ("墨西哥", "墨西哥"),
+        ("哥伦比亚", "哥伦比亚"),
+        ("澳洲", "澳洲"),
+        ("俄罗斯", "俄罗斯"),
+        ("日本", "日本"),
+        ("西葡", "西班牙、葡萄牙"),
+    )
 
     def __init__(self, xls_path: str | Path):
         self.xls_path = Path(xls_path)
@@ -353,8 +369,8 @@ class XLSPipeline:
     @classmethod
     def _infer_country(cls, sheet_name: str, channel: str | None) -> str | None:
         text = f"{channel or ''} {sheet_name}"
-        for country in ("美国", "日本", "巴西", "加拿大", "墨西哥", "澳洲", "英国", "欧洲"):
-            if country in text:
+        for keyword, country in cls.COUNTRY_SHEET_MAPPINGS:
+            if keyword in text:
                 return country
         return None
 
