@@ -21,3 +21,8 @@ def test_p_is_not_clothing():
 def test_plain_cargo_remains_plain_cargo():
     assert XLSPipeline._infer_cargo_type("美国专线小包-普货", None) == "普货"
     assert XLSPipeline._infer_cargo_type("日本专线小包-P普货", None) == "普货"
+
+
+def test_explicit_cargo_column_takes_precedence_over_channel_hints():
+    assert XLSPipeline._infer_cargo_type("TM美国专线Y2", "普货", "P服装") == "普货"
+    assert XLSPipeline._infer_cargo_type("美国专线小包", "P", "普货") == "P"
