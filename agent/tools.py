@@ -62,10 +62,12 @@ def calculate_rate(country: str, weight: float, cargo_type: str) -> list[dict[st
         rows = conn.execute(
             """
             SELECT * FROM channels
-            WHERE weight_min IS NOT NULL
-              AND weight_max IS NOT NULL
-              AND weight_min <= ?
+            WHERE weight_max IS NOT NULL
               AND weight_max >= ?
+              AND (
+                    (weight_min IS NOT NULL AND weight_min <= ?)
+                    OR first_weight IS NOT NULL
+                  )
             """,
             (weight, weight),
         ).fetchall()
@@ -75,6 +77,10 @@ def calculate_rate(country: str, weight: float, cargo_type: str) -> list[dict[st
         if not _country_matches(row["countries"], country):
             continue
         if not _cargo_matches(row["cargo_type"], cargo_type):
+            continue
+        # Price/kg rows must satisfy their explicit lower bound. First-weight
+        # rows may be selected below weight_min and billed at the starting rate.
+        if row["price_per_kg"] is not None and row["weight_min"] is not None and weight < float(row["weight_min"]):
             continue
         total = _calculate_total(row, weight)
         if total is None:
