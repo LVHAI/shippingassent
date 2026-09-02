@@ -16,7 +16,7 @@ logger = get_logger("tools")
 
 CARGO_TYPE_SYNONYMS: dict[str, str] = {
     "普通商品": "普货", "没特殊要求": "普货", "一般货物": "普货",
-    "P": "P", "P货": "P", "P服装": "P服装", "仿牌": "P", "敏货": "P", "仿牌/敏货": "P",
+    "P": "P", "P货": "P", "P服装": "P服装", "仿牌": "P", "敏货": "P", "敏感货": "P", "仿牌/敏货": "P",
     "衣服": "P服装", "服装": "P服装", "鞋子": "鞋子", "包包": "包包",
     "电子产品": "带电", "手机": "带电", "带电池": "带电", "笔记本": "带电",
     "化妆品": "膏体", "面霜": "膏体", "护肤品": "膏体", "香水": "液体",
@@ -71,12 +71,12 @@ def _cargo_matches(
     requested = normalize_cargo_type(requested_cargo)
     if supported_cargo_types is not None:
         supported = {str(value).strip() for value in supported_cargo_types if str(value).strip()}
-        # "P/仿牌" is the generic sensitive-cargo query. A channel explicitly
-        # accepting the specialized P-clothing capability is therefore also a
-        # valid match. The reverse is intentionally not allowed: querying
-        # P服装 must never match a generic P-only channel.
+        # P is the unified query type for counterfeit/sensitive cargo. Any
+        # explicitly supported P-prefixed capability (P服装, P鞋服, P包, ...)
+        # therefore matches a generic P query. Specific P-subtype queries keep
+        # exact matching so P服装 never falls back to generic P.
         if requested == "P":
-            return "P" in supported or "P服装" in supported
+            return any(value == "P" or value.startswith("P") for value in supported)
         return requested in supported
     if not channel_cargo:
         return False
@@ -84,7 +84,7 @@ def _cargo_matches(
     if channel_name and re.search(r"(?:^|[-_\s])服装(?:$|[-_\s])", str(channel_name), re.IGNORECASE):
         channel = "P服装"
     if requested == "P":
-        return channel in {"P", "P服装"}
+        return channel == "P" or channel.startswith("P")
     return channel == requested
 
 
