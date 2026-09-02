@@ -25,8 +25,28 @@ class ChannelRate:
     carrier: str | None = None
 
 
+@dataclass(frozen=True)
+class ChannelRule:
+    sheet_name: str
+    channel_name: str | None = None
+    rule_category: str = "其他"
+    content: str = ""
+
+
 class XLSPipeline:
     HEADER_KEYWORDS = ("渠道", "国家", "重量", "运费", "首", "续", "类型", "区域")
+    RULE_KEYWORDS = ("申报", "赔偿", "赔付", "安检", "退件", "退回", "禁运", "尺寸", "时效", "体积", "超长", "超重", "查验", "理赔", "禁止运输", "不接")
+    RULE_CATEGORIES = {
+        "赔偿": ("赔偿", "赔付", "理赔", "丢失赔"),
+        "禁运": ("禁运", "航空禁运", "禁止运输", "禁止寄运", "不接"),
+        "尺寸": ("尺寸", "长宽高", "体积", "超长", "超重"),
+        "退件": ("退件", "退回", "退费"),
+        "申报": ("申报", "申报价值", "低报", "报关"),
+        "安检": ("安检", "查验", "安全检查"),
+        "时效": ("时效", "派送时效", "延误", "工作日"),
+    }
+    STANDALONE_RULE_SHEETS = ("易德赔付标准", "退费额外费要求", "航空禁运物品")
+    PURE_HEADER_TERMS = ("规则类别", "规则内容", "内容", "说明", "备注", "物品名称", "类别", "序号", "国家", "渠道", "重量", "运费", "处理费", "尺寸要求", "参考时效")
 
     def __init__(self, xls_path: str | Path):
         self.xls_path = Path(xls_path)
@@ -107,15 +127,164 @@ class XLSPipeline:
             ))
         return results
 
+    def extract_all_rules(self) -> list[ChannelRule]:
+        rules: list[ChannelRule] = []
+        for sheet_name in self.sheet_names:
+            if any(name in sheet_name for name in self.STANDALONE_RULE_SHEETS):
+                rules.extend(self.extract_rules_from_standalone_sheet(sheet_name))
+            else:
+                rules.extend(self.extract_rules_from_rate_sheet(sheet_name))
+        return rules
+
+    def extract_rules_from_rate_sheet(self, sheet_name: str) -> list[ChannelRule]:
+        raw = pd.read_excel(self._excel, sheet_name=sheet_name, header=None)
+        header_row = self._find_header_row(raw)
+        if header_row is None:
+            return []
+        data_start = header_row + self._header_height(raw, header_row)
+        weight_col = self._find_weight_column_index(raw, header_row)
+        last_rate_row = self._find_last_rate_row(raw, data_start, weight_col)
+        if last_rate_row is None:
+            return []
+        first_rule_row = self._find_first_rule_row(raw, last_rate_row + 1)
+        if first_rule_row is None:
+            return []
+        channel_name = self._infer_rate_rule_channel(raw, sheet_name, data_start, last_rate_row)
+        return self._extract_rule_rows(raw, sheet_name, channel_name, first_rule_row)
+
+    def extract_rules_from_standalone_sheet(self, sheet_name: str) -> list[ChannelRule]:
+        raw = pd.read_excel(self._excel, sheet_name=sheet_name, header=None)
+        if raw.empty:
+            return []
+        rules: list[ChannelRule] = []
+        for idx in range(len(raw)):
+            content = self._row_text(raw.iloc[idx].tolist())
+            if not content or self._is_meaningless_rule_content(content, sheet_name):
+                continue
+            rules.append(ChannelRule(
+                sheet_name=sheet_name,
+                channel_name=self._infer_standalone_rule_channel(content),
+                rule_category=self._classify_rule_category(content),
+                content=content,
+            ))
+        return rules
+
     @classmethod
-    def _find_header_row(cls, raw: pd.DataFrame) -> int | None:
-        best: tuple[int, int] | None = None
-        for idx in range(min(len(raw), 30)):
-            values = [cls._text(v) or "" for v in raw.iloc[idx].tolist()]
-            score = sum(any(k in value for k in cls.HEADER_KEYWORDS) for value in values)
-            if score >= 2 and (best is None or score > best[1]):
-                best = (idx, score)
-        return best[0] if best else None
+    def _find_weight_column_index(cls, raw: pd.DataFrame, header_row: int) -> int | None:
+        height = cls._header_height(raw, header_row)
+        for col in range(raw.shape[1]):
+            text = " ".join(cls._text(raw.iat[row, col]) or "" for row in range(header_row, header_row + height))
+            if "重量" in text:
+                return col
+        return None
+
+    @classmethod
+    def _find_last_rate_row(cls, raw: pd.DataFrame, start_row: int, weight_col: int | None) -> int | None:
+        if weight_col is None:
+            return None
+        last: int | None = None
+        for idx in range(start_row, len(raw)):
+            weight = cls._parse_weight_range(raw.iat[idx, weight_col])
+            if not weight:
+                continue
+            numeric_values = sum(cls._number(value) is not None for value in raw.iloc[idx].tolist())
+            if numeric_values >= 2:
+                last = idx
+        return last
+
+    @classmethod
+    def _find_first_rule_row(cls, raw: pd.DataFrame, start_row: int) -> int | None:
+        for idx in range(start_row, len(raw)):
+            content = cls._row_text(raw.iloc[idx].tolist())
+            if content and cls._contains_rule_keyword(content):
+                return idx
+        return None
+
+    @classmethod
+    def _extract_rule_rows(cls, raw: pd.DataFrame, sheet_name: str, channel_name: str | None, start_row: int) -> list[ChannelRule]:
+        rules: list[ChannelRule] = []
+        blank_rows = 0
+        for idx in range(start_row, len(raw)):
+            content = cls._row_text(raw.iloc[idx].tolist())
+            if not content:
+                blank_rows += 1
+                if rules and blank_rows >= 2:
+                    break
+                continue
+            blank_rows = 0
+            if cls._is_meaningless_rule_content(content, sheet_name):
+                continue
+            rules.append(ChannelRule(
+                sheet_name=sheet_name,
+                channel_name=cls._infer_rule_channel_from_content(content, channel_name),
+                rule_category=cls._classify_rule_category(content),
+                content=content,
+            ))
+        return rules
+
+    @classmethod
+    def _infer_rate_rule_channel(cls, raw: pd.DataFrame, sheet_name: str, start_row: int, end_row: int) -> str | None:
+        header_row = cls._find_header_row(raw)
+        if header_row is not None:
+            channel_col = cls._find_column_index(raw, header_row, "渠道")
+            if channel_col is not None:
+                channels: list[str] = []
+                for idx in range(start_row, end_row + 1):
+                    channel = cls._text(raw.iat[idx, channel_col])
+                    if channel and channel not in channels:
+                        channels.append(channel)
+                if len(channels) == 1:
+                    return channels[0]
+        return sheet_name or None
+
+    @classmethod
+    def _infer_standalone_rule_channel(cls, content: str) -> str | None:
+        return cls._infer_rule_channel_from_content(content, None)
+
+    @classmethod
+    def _infer_rule_channel_from_content(cls, content: str, default: str | None) -> str | None:
+        known_channels = ("美国专线小包", "日本专线小包", "欧美标准专线", "巴西专线小包DDU", "香港DHL代理价")
+        for channel in known_channels:
+            if channel in content:
+                return channel
+        return default
+
+    @classmethod
+    def _find_column_index(cls, raw: pd.DataFrame, header_row: int, *needles: str) -> int | None:
+        height = cls._header_height(raw, header_row)
+        for col in range(raw.shape[1]):
+            text = " ".join(cls._text(raw.iat[row, col]) or "" for row in range(header_row, header_row + height))
+            if any(needle in text for needle in needles):
+                return col
+        return None
+
+    @classmethod
+    def _row_text(cls, values: list[Any]) -> str | None:
+        parts: list[str] = []
+        for value in values:
+            text = cls._text(value)
+            if text and text not in parts:
+                parts.append(text)
+        return " ".join(parts) or None
+
+    @classmethod
+    def _contains_rule_keyword(cls, content: str) -> bool:
+        return any(keyword in content for keyword in cls.RULE_KEYWORDS)
+
+    @classmethod
+    def _classify_rule_category(cls, content: str) -> str:
+        for category, keywords in cls.RULE_CATEGORIES.items():
+            if any(keyword in content for keyword in keywords):
+                return category
+        return "其他"
+
+    @classmethod
+    def _is_meaningless_rule_content(cls, content: str, sheet_name: str) -> bool:
+        normalized = re.sub(r"[\s:：、,，/]+", "", content)
+        if not normalized or normalized == re.sub(r"[\s:：、,，/]+", "", sheet_name):
+            return True
+        header_terms = {re.sub(r"[\s:：、,，/]+", "", term) for term in cls.PURE_HEADER_TERMS}
+        return normalized in header_terms
 
     @classmethod
     def _header_height(cls, raw: pd.DataFrame, header_row: int) -> int:
@@ -137,6 +306,16 @@ class XLSPipeline:
                     parts.append(value)
             headers.append(" ".join(parts) or f"column_{col}")
         return headers
+
+    @classmethod
+    def _find_header_row(cls, raw: pd.DataFrame) -> int | None:
+        best: tuple[int, int] | None = None
+        for idx in range(min(len(raw), 30)):
+            values = [cls._text(v) or "" for v in raw.iloc[idx].tolist()]
+            score = sum(any(k in value for k in cls.HEADER_KEYWORDS) for value in values)
+            if score >= 2 and (best is None or score > best[1]):
+                best = (idx, score)
+        return best[0] if best else None
 
     @classmethod
     def _find_col(cls, columns: Any, *needles: str) -> str | None:
