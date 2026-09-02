@@ -64,7 +64,7 @@ class DashScopeEmbeddingClient:
 
 
 class MilvusRuleLoader:
-    """Create, rebuild, and search the shipping rule vector collection."""
+    """Create, rebuild, search, and browse the shipping rule vector collection."""
 
     collection_name = COLLECTION_NAME
 
@@ -173,6 +173,42 @@ class MilvusRuleLoader:
                 "metadata": entity.get("metadata") or {},
             })
         return items
+
+    def list_rules(
+        self,
+        sheet_name: str | None = None,
+        channel_name: str | None = None,
+        rule_category: str | None = None,
+        limit: int = 100,
+    ) -> list[dict[str, Any]]:
+        """Return rules matching exact metadata filters without embedding a query."""
+        if limit <= 0 or not self.client.has_collection(self.collection_name):
+            return []
+        filters = []
+        if sheet_name:
+            filters.append(f"sheet_name == {json.dumps(sheet_name, ensure_ascii=False)}")
+        if channel_name:
+            filters.append(f"channel_name == {json.dumps(channel_name, ensure_ascii=False)}")
+        if rule_category:
+            filters.append(f"rule_category == {json.dumps(rule_category, ensure_ascii=False)}")
+        filter_expr = " and ".join(filters) if filters else None
+        rows = self.client.query(
+            collection_name=self.collection_name,
+            filter=filter_expr,
+            output_fields=["text", "sheet_name", "channel_name", "rule_category", "metadata"],
+            limit=limit,
+        )
+        return [
+            {
+                "id": row.get("id"),
+                "text": row.get("text"),
+                "sheet_name": row.get("sheet_name"),
+                "channel_name": row.get("channel_name") or None,
+                "rule_category": row.get("rule_category"),
+                "metadata": row.get("metadata") or {},
+            }
+            for row in rows
+        ]
 
     @staticmethod
     def _normalize_rule(rule: ChannelRule | dict[str, Any]) -> dict[str, Any]:
