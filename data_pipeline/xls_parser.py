@@ -68,12 +68,10 @@ class XLSPipeline:
             return []
         if self._is_zone_table(raw, header_row):
             return self._parse_zone_table(raw, header_row, sheet_name)
-
         headers = self._build_headers(raw, header_row)
         data = raw.iloc[header_row + self._header_height(raw, header_row):].copy()
         data.columns = headers
         data = data.dropna(how="all")
-
         channel_col = self._find_col(data.columns, "渠道")
         country_col = self._find_col(data.columns, "国家")
         cargo_col = self._find_col(data.columns, "接货类型", "货物类型")
@@ -85,11 +83,9 @@ class XLSPipeline:
         size_col = self._find_col(data.columns, "尺寸要求及附加费", "尺寸要求")
         transit_col = self._find_col(data.columns, "参考时效", "时效")
         carrier_col = self._find_col(data.columns, "承运商", "目的地承运商")
-
         fill_cols = [c for c in (channel_col, country_col, cargo_col, size_col, transit_col, carrier_col) if c]
         for col in fill_cols:
             data[col] = data[col].ffill()
-
         header_text = " ".join(str(c) for c in data.columns)
         results: list[ChannelRate] = []
         for _, row in data.iterrows():
@@ -107,24 +103,7 @@ class XLSPipeline:
             additional_weight = self._weight_from_header(additional_col)
             first_price = self._number(row.get(first_col)) if first_col else None
             additional_price = self._number(row.get(additional_col)) if additional_col else None
-
-            results.append(ChannelRate(
-                sheet_name=sheet_name,
-                channel_name=channel,
-                countries=country,
-                cargo_type=cargo,
-                weight_min=weight[0],
-                weight_max=weight[1],
-                price_per_kg=price,
-                handling_fee=handling,
-                first_weight=first_weight,
-                first_weight_price=first_price,
-                additional_weight=additional_weight,
-                additional_weight_price=additional_price,
-                size_requirements=self._text(row.get(size_col)) if size_col else None,
-                transit_time=self._text(row.get(transit_col)) if transit_col else None,
-                carrier=self._text(row.get(carrier_col)) if carrier_col else None,
-            ))
+            results.append(ChannelRate(sheet_name=sheet_name, channel_name=channel, countries=country, cargo_type=cargo, weight_min=weight[0], weight_max=weight[1], price_per_kg=price, handling_fee=handling, first_weight=first_weight, first_weight_price=first_price, additional_weight=additional_weight, additional_weight_price=additional_price, size_requirements=self._text(row.get(size_col)) if size_col else None, transit_time=self._text(row.get(transit_col)) if transit_col else None, carrier=self._text(row.get(carrier_col)) if carrier_col else None))
         return results
 
     def extract_all_rules(self) -> list[ChannelRule]:
@@ -161,12 +140,7 @@ class XLSPipeline:
             content = self._row_text(raw.iloc[idx].tolist())
             if not content or self._is_meaningless_rule_content(content, sheet_name):
                 continue
-            rules.append(ChannelRule(
-                sheet_name=sheet_name,
-                channel_name=self._infer_standalone_rule_channel(content),
-                rule_category=self._classify_rule_category(content),
-                content=content,
-            ))
+            rules.append(ChannelRule(sheet_name=sheet_name, channel_name=self._infer_standalone_rule_channel(content), rule_category=self._classify_rule_category(content), content=content))
         return rules
 
     @classmethod
@@ -214,12 +188,7 @@ class XLSPipeline:
             blank_rows = 0
             if cls._is_meaningless_rule_content(content, sheet_name):
                 continue
-            rules.append(ChannelRule(
-                sheet_name=sheet_name,
-                channel_name=cls._infer_rule_channel_from_content(content, channel_name),
-                rule_category=cls._classify_rule_category(content),
-                content=content,
-            ))
+            rules.append(ChannelRule(sheet_name=sheet_name, channel_name=cls._infer_rule_channel_from_content(content, channel_name), rule_category=cls._classify_rule_category(content), content=content))
         return rules
 
     @classmethod
@@ -284,7 +253,10 @@ class XLSPipeline:
         if not normalized or normalized == re.sub(r"[\s:：、,，/]+", "", sheet_name):
             return True
         header_terms = {re.sub(r"[\s:：、,，/]+", "", term) for term in cls.PURE_HEADER_TERMS}
-        return normalized in header_terms
+        tokens = [re.sub(r"[\s:：、,，/]+", "", token) for token in re.split(r"[\s]+", content) if token]
+        if normalized in header_terms:
+            return True
+        return len(tokens) > 1 and all(token in header_terms for token in tokens)
 
     @classmethod
     def _header_height(cls, raw: pd.DataFrame, header_row: int) -> int:
@@ -408,15 +380,7 @@ class XLSPipeline:
                 country = countries[col]
                 if not country:
                     continue
-                results.append(ChannelRate(
-                    sheet_name=sheet_name,
-                    channel_name=sheet_name,
-                    countries=country,
-                    cargo_type=self._infer_cargo_type(service_type, None),
-                    weight_min=weight[0],
-                    weight_max=weight[1],
-                    price_per_kg=self._number(row.iloc[col]),
-                ))
+                results.append(ChannelRate(sheet_name=sheet_name, channel_name=sheet_name, countries=country, cargo_type=self._infer_cargo_type(service_type, None), weight_min=weight[0], weight_max=weight[1], price_per_kg=self._number(row.iloc[col])))
         return results
 
     @staticmethod
