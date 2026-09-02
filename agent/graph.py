@@ -73,6 +73,7 @@ def _initial_state(user_input: str, previous_state: ShippingState | None) -> Shi
     if previous_state is not None and previous_state.get("route") == "ask_followup":
         return {
             "user_input": user_input,
+            "route": "ask_followup",
             "country": previous_state.get("country"),
             "weight": previous_state.get("weight"),
             "cargo_type": previous_state.get("cargo_type"),
