@@ -47,20 +47,7 @@ class XLSPipeline:
     }
     STANDALONE_RULE_SHEETS = ("易德赔付标准", "退费额外费要求", "航空禁运物品")
     PURE_HEADER_TERMS = ("规则类别", "规则内容", "内容", "说明", "备注", "物品名称", "类别", "序号", "国家", "渠道", "重量", "运费", "处理费", "尺寸要求", "参考时效")
-    COUNTRY_SHEET_MAPPINGS = (
-        ("巴西", "巴西"),
-        ("智利", "智利"),
-        ("秘鲁", "秘鲁"),
-        ("阿根廷", "阿根廷"),
-        ("以色列", "以色列"),
-        ("英国", "英国"),
-        ("美国", "美国"),
-        ("加拿大", "加拿大"),
-        ("墨西哥", "墨西哥"),
-        ("哥伦比亚", "哥伦比亚"),
-        ("澳洲", "澳洲"),
-        ("俄罗斯", "俄罗斯"),
-        ("日本", "日本"),
+    COUNTRY_COMPOSITE_SHEETS = (
         ("西葡", "西班牙、葡萄牙"),
     )
 
@@ -70,6 +57,7 @@ class XLSPipeline:
             raise FileNotFoundError(self.xls_path)
         self._excel = pd.ExcelFile(self.xls_path, engine="xlrd")
         self.sheet_names = self._excel.sheet_names
+        self.country_catalog = self._build_country_catalog()
 
     def parse_all(self) -> list[ChannelRate]:
         rows: list[ChannelRate] = []
@@ -366,13 +354,42 @@ class XLSPipeline:
             return "普货"
         return None
 
-    @classmethod
-    def _infer_country(cls, sheet_name: str, channel: str | None) -> str | None:
+    def _build_country_catalog(self) -> dict[str, str]:
+        aliases: dict[str, str] = {}
+        for sheet_name in self.sheet_names:
+            raw = pd.read_excel(self._excel, sheet_name=sheet_name, header=None)
+            for row in raw.itertuples(index=False, name=None):
+                values = [self._text(value) for value in row]
+                for idx, value in enumerate(values):
+                    if not value:
+                        continue
+                    match = re.fullmatch(r"([A-Z]{2})", value.upper())
+                    if not match:
+                        continue
+                    chinese = next((v for v in values[idx + 1:idx + 3] if v and re.search(r"[\u4e00-\u9fff]", v)), None)
+                    english = next((v for v in values[idx + 1:idx + 3] if v and re.fullmatch(r"[A-Za-z][A-Za-z .'-]+", v)), None)
+                    if chinese:
+                        canonical = re.sub(r"\s+", "", chinese)
+                        aliases[canonical] = canonical
+                        if english:
+                            aliases[english.strip().lower()] = canonical
+                    break
+        return aliases
+
+    def _infer_country(self, sheet_name: str, channel: str | None) -> str | None:
         text = f"{channel or ''} {sheet_name}"
-        for keyword, country in cls.COUNTRY_SHEET_MAPPINGS:
+        for keyword, country in self.COUNTRY_COMPOSITE_SHEETS:
             if keyword in text:
                 return country
-        return None
+        normalized = text.lower()
+        matches: list[tuple[int, str]] = []
+        for alias, country in self.country_catalog.items():
+            if alias and alias in normalized:
+                matches.append((len(alias), country))
+        if not matches:
+            return None
+        matches.sort(reverse=True)
+        return matches[0][1]
 
     @classmethod
     def _is_zone_table(cls, raw: pd.DataFrame, header_row: int) -> bool:
