@@ -334,8 +334,11 @@ class XLSPipeline:
             return "纯电池"
         if "普货" in channel_or_empty(channel):
             return "普货"
+        # XLS 中 P 统一表示仿牌/敏感货，不能再解释成“P服装”。
+        if re.search(r"(?:^|[-_\s])P(?:$|[-_\s]|服装|货|敏感|仿牌)", text, re.IGNORECASE):
+            return "P"
         if "P货" in text or "P服装" in text or "服装" in text:
-            return "P货"
+            return "P"
         if "普货" in headers and "带电" not in channel_or_empty(channel):
             return "普货"
         if "不接带电" in text and "普货" in text:
