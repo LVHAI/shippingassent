@@ -12,11 +12,7 @@ from agent.tools import calculate_rate, normalize_cargo_type, search_rules
 
 
 logger = get_logger("nodes")
-FOLLOWUP_LABELS = {
-    "country": "目的国家",
-    "weight": "货物重量（KG）",
-    "cargo_type": "货物类型",
-}
+FOLLOWUP_LABELS = {"country": "目的国家", "weight": "货物重量（KG）", "cargo_type": "货物类型"}
 DEFAULT_RATE_CARGO_TYPES = ["普货", "P"]
 
 
@@ -43,9 +39,11 @@ def parse_intent_node(state: ShippingState) -> dict[str, Any]:
         weight = result.get("weight") if result.get("weight") is not None else state.get("weight")
         cargo_type = cargo_type or state.get("cargo_type")
 
-        is_followup = state.get("route") == "ask_followup" and parsed_intent in {
-            "rate_query", "followup", "chitchat"
-        } and any(value is not None for value in (result.get("country"), result.get("weight"), result.get("cargo_type")))
+        is_followup = (
+            state.get("route") == "ask_followup"
+            and parsed_intent in {"rate_query", "followup", "chitchat"}
+            and any(value is not None for value in (result.get("country"), result.get("weight"), result.get("cargo_type")))
+        )
         intent_type = "followup" if is_followup else parsed_intent
 
         if intent_type in {"rate_query", "mixed", "followup"}:
@@ -100,13 +98,7 @@ def _merge_rate_results(rate_results: list[dict[str, Any]]) -> list[dict[str, An
     merged: list[dict[str, Any]] = []
     seen: set[tuple[Any, ...]] = set()
     for item in rate_results:
-        key = (
-            item.get("id"),
-            item.get("channel_name"),
-            item.get("weight_min"),
-            item.get("weight_max"),
-            item.get("total_price"),
-        )
+        key = (item.get("id"), item.get("channel_name"), item.get("weight_min"), item.get("weight_max"), item.get("total_price"))
         if key in seen:
             continue
         seen.add(key)
@@ -125,18 +117,20 @@ def calculate_rate_node(state: ShippingState) -> dict[str, Any]:
         if cargo_type:
             query_types = [normalize_cargo_type(cargo_type)]
         elif cargo_types:
-            query_types = [normalize_cargo_type(value) for value in cargo_types if value]
+            query_types = list(dict.fromkeys(normalize_cargo_type(value) for value in cargo_types if value))
         else:
             query_types = list(DEFAULT_RATE_CARGO_TYPES)
 
         if not country or weight is None or not query_types:
-            update = {"rate_results": []}
+            rate_results: list[dict[str, Any]] = []
         else:
-            results: list[dict[str, Any]] = []
+            rate_results = []
             for query_type in query_types:
-                results.extend(calculate_rate(country, weight, query_type))
-            update = {"rate_results": _merge_rate_results(results)}
-        logger.info("rate.result count=%d country=%s weight=%s cargo_types=%s", len(update["rate_results"]), country, weight, query_types)
+                rate_results.extend(calculate_rate(country, weight, query_type))
+            rate_results = _merge_rate_results(rate_results)
+
+        update = {"rate_results": rate_results}
+        logger.info("rate.result count=%d country=%s weight=%s cargo_types=%s", len(rate_results), country, weight, query_types)
         _end("calculate_rate", started, update)
         return update
     except Exception:
@@ -155,6 +149,9 @@ def search_rules_node(state: ShippingState) -> dict[str, Any]:
         logger.info("rules.result count=%d", len(update["rule_results"]))
         _end("search_rules", started, update)
         return update
+    except Exception:
+        logger.exception("node.failed name=search_rules")
+        raise
 
 
 def _dashscope_format(prompt: str) -> str:
@@ -162,19 +159,13 @@ def _dashscope_format(prompt: str) -> str:
     if not api_key:
         raise RuntimeError("DASHSCOPE_API_KEY is not configured")
     from dashscope import Generation
-
     logger.info("response.format.start model=qwen3.7-max input_chars=%d", len(prompt))
     started = time.perf_counter()
     try:
-        response = Generation.call(
-            api_key=api_key,
-            model="qwen3.7-max",
-            messages=[
-                {"role": "system", "content": "你是运费助手回复格式化器。只根据给定的报价和规则数据组织自然语言。不得修改报价数字、渠道、时效或规则原文；没有依据的数据不得补充。"},
-                {"role": "user", "content": prompt},
-            ],
-            result_format="message",
-        )
+        response = Generation.call(api_key=api_key, model="qwen3.7-max", messages=[
+            {"role": "system", "content": "你是运费助手回复格式化器。只根据给定的报价和规则数据组织自然语言。不得修改报价数字、渠道、时效或规则原文；没有依据的数据不得补充。"},
+            {"role": "user", "content": prompt},
+        ], result_format="message")
         output = getattr(response, "output", None)
         if output is not None:
             choices = getattr(output, "choices", None)
@@ -182,22 +173,16 @@ def _dashscope_format(prompt: str) -> str:
                 message = getattr(choices[0], "message", None)
                 content = getattr(message, "content", None)
                 if content is not None:
-                    text = str(content)
-                    logger.info("response.format.end elapsed_ms=%.1f output_chars=%d", (time.perf_counter() - started) * 1000, len(text))
-                    return text
+                    return str(content)
             text = getattr(output, "text", None)
             if text is not None:
-                text = str(text)
-                logger.info("response.format.end elapsed_ms=%.1f output_chars=%d", (time.perf_counter() - started) * 1000, len(text))
-                return text
+                return str(text)
         if isinstance(response, dict):
             output = response.get("output", response)
             choices = output.get("choices", []) if isinstance(output, dict) else []
             if choices:
                 message = choices[0].get("message", choices[0])
-                text = str(message.get("content", "")) if isinstance(message, dict) else str(message)
-                logger.info("response.format.end elapsed_ms=%.1f output_chars=%d", (time.perf_counter() - started) * 1000, len(text))
-                return text
+                return str(message.get("content", "")) if isinstance(message, dict) else str(message)
         logger.warning("response.format.empty elapsed_ms=%.1f", (time.perf_counter() - started) * 1000)
         return ""
     except Exception:
@@ -206,8 +191,7 @@ def _dashscope_format(prompt: str) -> str:
 
 
 def _format_weight_band(item: dict[str, Any]) -> str:
-    minimum = item.get("weight_min")
-    maximum = item.get("weight_max")
+    minimum, maximum = item.get("weight_min"), item.get("weight_max")
     if minimum is None and maximum is None:
         first = item.get("first_weight")
         return f"首重{first:g}kg" if first is not None else "重量未提供"
@@ -223,11 +207,9 @@ def _price_text(value: Any) -> str:
 
 
 def _deterministic_rate_lines(rate_results: list[dict[str, Any]]) -> str:
-    """Group every matched rate row by channel so no channel/band is silently dropped."""
     grouped: dict[str, list[dict[str, Any]]] = {}
     for item in rate_results:
         grouped.setdefault(str(item.get("channel_name") or "未知渠道"), []).append(item)
-
     sections: list[str] = []
     for channel_name, items in grouped.items():
         lines = [f"**{channel_name}**"]
@@ -241,8 +223,7 @@ def _deterministic_rate_lines(rate_results: list[dict[str, Any]]) -> str:
                 additional = item.get("additional_weight_price")
                 handling = f"，续重{_price_text(additional)}元" if additional is not None else ""
             else:
-                price = "价格未提供"
-                handling = ""
+                price, handling = "价格未提供", ""
             total = f"，总价{_price_text(item.get('total_price'))}元" if item.get("total_price") is not None else ""
             lines.append(f"- {band}：{price}{handling}{total}")
         transit = next((item.get("transit_time") for item in items if item.get("transit_time")), None)
@@ -281,10 +262,7 @@ def _llm_response_is_faithful(text: str, rate_results: list[dict[str, Any]]) -> 
     return True
 
 
-def format_rate_response(
-    rate_results: list[dict[str, Any]],
-    llm_call: Callable[[str], str] | None = None,
-) -> str:
+def format_rate_response(rate_results: list[dict[str, Any]], llm_call: Callable[[str], str] | None = None) -> str:
     if not rate_results:
         return "抱歉，未找到符合条件的渠道"
     return _deterministic_rate_lines(rate_results)
@@ -338,12 +316,4 @@ def ask_followup_node(state: ShippingState) -> dict[str, Any]:
         raise
 
 
-__all__ = [
-    "ask_followup_node",
-    "calculate_rate_node",
-    "check_params_node",
-    "format_rate_response",
-    "generate_response_node",
-    "parse_intent_node",
-    "search_rules_node",
-]
+__all__ = ["ask_followup_node", "calculate_rate_node", "check_params_node", "format_rate_response", "generate_response_node", "parse_intent_node", "search_rules_node"]
