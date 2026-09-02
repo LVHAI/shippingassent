@@ -1,7 +1,12 @@
+from pathlib import Path
+
 import pandas as pd
-import pytest
 
 from data_pipeline.xls_parser import ChannelRule, XLSPipeline
+
+
+ROOT = Path(__file__).resolve().parents[1]
+XLS_PATH = ROOT / "20260713.xls"
 
 
 def _pipeline(monkeypatch, sheets):
@@ -47,7 +52,7 @@ def test_extract_rules_from_rate_sheet_reads_rows_after_rate_table(monkeypatch):
 
     assert len(rules) == 2
     assert all(isinstance(rule, ChannelRule) for rule in rules)
-    assert rules[0].channel_name == "美国专线小包"
+    assert rules[0].channel_name == "ED美线免税小包-普货(AQ)"
     assert rules[0].rule_category == "申报"
     assert "申报价值" in rules[0].content
     assert rules[1].rule_category == "赔偿"
@@ -86,3 +91,19 @@ def test_rule_category_supports_all_required_categories():
     }
     for expected, content in cases.items():
         assert XLSPipeline._classify_rule_category(content) == expected
+
+
+def test_real_workbook_extracts_rules_from_required_sheets():
+    pipeline = XLSPipeline(XLS_PATH)
+    rate_rules = []
+    for sheet_name in ("美国专线小包", "日本专线小包"):
+        rate_rules.extend(pipeline.extract_rules_from_rate_sheet(sheet_name))
+    standalone_rules = []
+    for sheet_name in ("易德赔付标准", "退费额外费要求", "航空禁运物品"):
+        if sheet_name in pipeline.sheet_names:
+            standalone_rules.extend(pipeline.extract_rules_from_standalone_sheet(sheet_name))
+
+    assert rate_rules, "required rate-sheet rules were not extracted"
+    assert standalone_rules, "required standalone rules were not extracted"
+    assert all(rule.content.strip() for rule in rate_rules + standalone_rules)
+    assert {rule.rule_category for rule in rate_rules + standalone_rules} <= set(XLSPipeline.RULE_CATEGORIES) | {"其他"}
