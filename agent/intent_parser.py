@@ -104,6 +104,8 @@ def normalize_weight(value: Any) -> float | None:
     number = float(match.group())
     if "斤" in text:
         return number * 0.5
+    if "kg" in text:
+        return number
     if "g" in text or "克" in text:
         return number / 1000
     return number
