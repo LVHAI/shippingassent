@@ -60,10 +60,13 @@ def test_list_channels_groups_by_region_and_country(tmp_path: Path):
         )
 
     rows = app.list_channels(db)
+    grouped = app.group_channels(rows)
 
     assert len(rows) == 3
     assert rows[0]["region"] == "北美"
     assert rows[0]["countries"] == "美国,加拿大"
+    assert [row["id"] for row in grouped["北美"]] == [1, 3]
+    assert [row["id"] for row in grouped["欧洲"]] == [2]
 
 
 def test_channel_details_returns_selected_channel(tmp_path: Path):
@@ -78,3 +81,26 @@ def test_channel_details_returns_selected_channel(tmp_path: Path):
 
     assert detail["channel_name"] == "UPS"
     assert detail["carrier"] == "UPS"
+
+
+def test_get_channel_rules_uses_milvus_metadata_filter(monkeypatch, tmp_path: Path):
+    import app
+
+    calls = []
+
+    class FakeLoader:
+        def __init__(self, uri):
+            calls.append(("init", Path(uri)))
+
+        def list_rules(self, sheet_name=None, channel_name=None, rule_category=None, limit=100):
+            calls.append(("list", sheet_name, channel_name, rule_category, limit))
+            return [{"text": "单票申报价值不能超过规定金额", "rule_category": "申报"}]
+
+    monkeypatch.setattr(app, "MilvusRuleLoader", FakeLoader)
+    rules = app.get_channel_rules(tmp_path / "rules.db", "美国专线小包", "ED美线免税小包-普货(AQ)")
+
+    assert rules == [{"text": "单票申报价值不能超过规定金额", "rule_category": "申报"}]
+    assert calls == [
+        ("init", tmp_path / "rules.db"),
+        ("list", "美国专线小包", "ED美线免税小包-普货(AQ)", None, 100),
+    ]
