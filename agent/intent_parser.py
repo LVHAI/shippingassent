@@ -3,10 +3,14 @@ from __future__ import annotations
 import json
 import os
 import re
+import time
 from collections.abc import Callable
 from typing import Any
 
+from agent.logging_config import get_logger
 
+
+logger = get_logger("intent")
 MODEL_NAME = "qwen3.7-max"
 VALID_INTENTS = {"rate_query", "rule_query", "mixed", "followup", "chitchat"}
 
@@ -148,28 +152,51 @@ def _dashscope_call(prompt: str) -> str:
     if not api_key:
         raise RuntimeError("DASHSCOPE_API_KEY is not configured")
 
-    from dashscope import Generation
+    logger.info("intent.dashscope.start model=%s input_chars=%d", MODEL_NAME, len(prompt))
+    started = time.perf_counter()
+    try:
+        from dashscope import Generation
 
-    response = Generation.call(
-        api_key=api_key,
-        model=MODEL_NAME,
-        messages=[
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": prompt},
-        ],
-        result_format="message",
-    )
-    return _extract_response_text(response)
+        response = Generation.call(
+            api_key=api_key,
+            model=MODEL_NAME,
+            messages=[
+                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "user", "content": prompt},
+            ],
+            result_format="message",
+        )
+        text = _extract_response_text(response)
+        logger.info("intent.dashscope.end elapsed_ms=%.1f output_chars=%d", (time.perf_counter() - started) * 1000, len(text))
+        return text
+    except Exception:
+        logger.exception("intent.dashscope.failed elapsed_ms=%.1f", (time.perf_counter() - started) * 1000)
+        raise
 
 
 def parse_intent(user_input: str, llm_call: Callable[[str], Any] | None = None) -> dict[str, Any]:
     """Extract structured shipping intent, returning a safe fallback on failure."""
     if not isinstance(user_input, str) or not user_input.strip():
+        logger.warning("intent.parse.empty_input")
         return _safe_fallback()
+
+    logger.info("intent.parse.start input_chars=%d", len(user_input))
+    started = time.perf_counter()
     try:
         response = llm_call(user_input) if llm_call is not None else _dashscope_call(user_input)
-        return _finalize(_parse_json(_extract_response_text(response)))
+        result = _finalize(_parse_json(_extract_response_text(response)))
+        logger.info(
+            "intent.parse.end elapsed_ms=%.1f intent=%s country=%s weight=%s cargo_type=%s missing=%s",
+            (time.perf_counter() - started) * 1000,
+            result["intent_type"],
+            result["country"],
+            result["weight"],
+            result["cargo_type"],
+            result["missing_params"],
+        )
+        return result
     except Exception:
+        logger.exception("intent.parse.failed elapsed_ms=%.1f", (time.perf_counter() - started) * 1000)
         return _safe_fallback()
 
 
