@@ -6,34 +6,64 @@ import sqlite3
 import tempfile
 import uuid
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator
 
 import streamlit as st
 from dotenv import load_dotenv
 
-from agent.graph import run_once
+from agent.graph import run_once, run_stream
+from agent.logging_config import get_logger
 from data_pipeline.milvus_loader import MILVUS_DB_PATH, MilvusRuleLoader, load_rules_from_xls
 from data_pipeline.sqlite_loader import DB_PATH, load_from_xls
 
 ROOT = Path(__file__).resolve().parent
 PAGE_NAMES = ["聊天", "数据导入", "渠道浏览"]
+logger = get_logger("app")
 
 
 def load_environment() -> bool:
-    return bool(load_dotenv(ROOT / ".env"))
+    loaded = bool(load_dotenv(ROOT / ".env"))
+    logger.info("environment.loaded project_env=%s", loaded)
+    if not __import__("os").getenv("DASHSCOPE_API_KEY"):
+        logger.warning("environment.missing DASHSCOPE_API_KEY")
+    return loaded
 
 
 load_environment()
 
 
 def run_agent(user_input: str, conversation_id: str, previous_state: dict[str, Any] | None = None) -> dict[str, Any]:
-    return run_once(user_input, previous_state, conversation_id)
+    logger.info("chat.request thread_id=%s input_chars=%d", conversation_id, len(user_input))
+    try:
+        result = run_once(user_input, previous_state, conversation_id)
+        logger.info("chat.response thread_id=%s response_chars=%d", conversation_id, len(str(result.get("response", ""))))
+        return result
+    except Exception:
+        logger.exception("chat.failed thread_id=%s", conversation_id)
+        raise
+
+
+def run_agent_stream(user_input: str, conversation_id: str, previous_state: dict[str, Any] | None = None) -> Iterator[dict[str, Any]]:
+    logger.info("chat.stream.start thread_id=%s input_chars=%d", conversation_id, len(user_input))
+    try:
+        yield from run_stream(user_input, previous_state, conversation_id)
+        logger.info("chat.stream.end thread_id=%s", conversation_id)
+    except Exception:
+        logger.exception("chat.stream.failed thread_id=%s", conversation_id)
+        raise
 
 
 def import_xls_data(xls_path: str | Path, db_path: str | Path, milvus_path: str | Path) -> dict[str, int]:
-    rate_count = load_from_xls(xls_path, db_path=db_path)
-    rule_count = load_rules_from_xls(xls_path, uri=milvus_path)
-    return {"rate_count": rate_count, "rule_count": rule_count}
+    logger.info("import.start xls=%s", xls_path)
+    try:
+        rate_count = load_from_xls(xls_path, db_path=db_path)
+        rule_count = load_rules_from_xls(xls_path, uri=milvus_path)
+        result = {"rate_count": rate_count, "rule_count": rule_count}
+        logger.info("import.end rate_count=%d rule_count=%d", rate_count, rule_count)
+        return result
+    except Exception:
+        logger.exception("import.failed xls=%s", xls_path)
+        raise
 
 
 def import_uploaded_xls(uploaded_path: str | Path, db_path: str | Path = DB_PATH, milvus_path: str | Path = MILVUS_DB_PATH) -> dict[str, int]:
@@ -93,11 +123,25 @@ def _chat_page() -> None:
         with st.chat_message("user"):
             st.markdown(prompt)
         with st.chat_message("assistant"):
+            status = st.status("正在处理…", expanded=True)
+            response = ""
             try:
-                state = run_agent(prompt, conversation_id)
-                response = state.get("response", "")
+                for event in run_agent_stream(prompt, conversation_id):
+                    node = event.get("node", "unknown")
+                    data = event.get("data", {})
+                    logger.info("chat.stream.event thread_id=%s node=%s", conversation_id, node)
+                    status.write(f"✓ {node}")
+                    if isinstance(data, dict) and data.get("response"):
+                        response = str(data["response"])
+                        status.write("✓ 已生成回复")
+                if not response:
+                    response = "处理完成，但没有生成回复。请查看终端日志。"
+                status.update(label="处理完成", state="complete", expanded=False)
             except Exception as exc:
-                response = f"处理失败：{exc}"
+                logger.exception("chat.ui.failed thread_id=%s", conversation_id)
+                status.update(label="处理失败", state="error", expanded=True)
+                status.write(f"错误：{exc}")
+                response = "处理失败，请查看终端日志获取完整 traceback。"
             st.markdown(response)
         messages.append({"role": "assistant", "content": response})
 
@@ -126,6 +170,7 @@ def _import_page() -> None:
         st.metric("渠道数量", result["rate_count"])
         st.metric("规则数量", result["rule_count"])
     except Exception as exc:
+        logger.exception("import.ui.failed")
         st.error(f"导入失败：{exc}")
     finally:
         shutil.rmtree(temp_dir, ignore_errors=True)
@@ -187,6 +232,7 @@ def _browse_page() -> None:
     try:
         rules = get_channel_rules(MILVUS_DB_PATH, detail.get("sheet_name"), detail.get("channel_name"))
     except Exception as exc:
+        logger.exception("browse.rules.failed channel_id=%s", selected_id)
         st.warning(f"规则加载失败：{exc}")
         rules = []
     if not rules:
