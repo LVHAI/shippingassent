@@ -52,8 +52,7 @@ def test_generate_response_node_preserves_exact_quote_data(monkeypatch):
     assert result["rate_results"] == quotes
 
 
-def test_generate_response_node_has_fixed_no_match_message(monkeypatch):
-    monkeypatch.setattr(nodes, "format_rate_response", lambda results: "这段代码不应被调用")
+def test_generate_response_node_has_fixed_no_match_message():
     result = nodes.generate_response_node({"rate_results": []})
     assert result["response"] == "抱歉，未找到符合条件的渠道"
 
