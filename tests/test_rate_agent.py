@@ -1,0 +1,336 @@
+import agent.nodes as nodes
+from agent.tools import _cargo_matches
+from data_pipeline.sqlite_loader import init_db, load_rates
+from data_pipeline.xls_parser import ChannelRate
+
+
+def test_check_params_node_routes_complete_state_to_ready():
+    result = nodes.check_params_node({"missing_params": []})
+    assert result == {"route": "ready"}
+
+
+def test_check_params_node_routes_missing_state_to_followup():
+    result = nodes.check_params_node({"missing_params": ["weight"]})
+    assert result == {"route": "ask_followup"}
+
+
+def test_calculate_rate_node_writes_deterministic_quotes(monkeypatch):
+    expected = [{"channel_name": "日本普货佐川", "total_price": 119.0, "transit_time": "4-7天"}]
+    monkeypatch.setattr(nodes, "calculate_rate", lambda country, weight, cargo_type: expected)
+    result = nodes.calculate_rate_node({
+        "country": "日本",
+        "weight": 2.0,
+        "cargo_type": "普货",
+    })
+    assert result["rate_results"] == expected
+
+
+def test_calculate_rate_node_queries_general_and_sensitive_when_unspecified(monkeypatch):
+    calls = []
+    results = {
+        "普货": [{"channel_name": "美国普货快线", "total_price": 100.0}],
+        "P": [{"channel_name": "美国敏货快线", "total_price": 120.0}],
+    }
+
+    def fake_calculate(country, weight, cargo_type):
+        calls.append((country, weight, cargo_type))
+        return results[cargo_type]
+
+    monkeypatch.setattr(nodes, "calculate_rate", fake_calculate)
+    result = nodes.calculate_rate_node({
+        "country": "美国",
+        "weight": 3.0,
+        "cargo_type": None,
+        "cargo_types": ["普货", "P"],
+    })
+    assert calls == [("美国", 3.0, "普货"), ("美国", 3.0, "P")]
+    assert result["rate_results"] == results["普货"] + results["P"]
+
+
+def test_calculate_rate_node_deduplicates_channel_rows_across_cargo_types(monkeypatch):
+    shared = {"channel_name": "美国综合专线", "total_price": 110.0}
+
+    def fake_calculate(country, weight, cargo_type):
+        return [shared] if cargo_type == "普货" else [shared, {"channel_name": "美国敏货专线", "total_price": 130.0}]
+
+    monkeypatch.setattr(nodes, "calculate_rate", fake_calculate)
+    result = nodes.calculate_rate_node({
+        "country": "美国",
+        "weight": 3.0,
+        "cargo_type": None,
+        "cargo_types": ["普货", "P"],
+    })
+    assert result["rate_results"] == [shared, {"channel_name": "美国敏货专线", "total_price": 130.0}]
+
+
+def test_calculate_rate_node_returns_empty_when_no_match(monkeypatch):
+    monkeypatch.setattr(nodes, "calculate_rate", lambda country, weight, cargo_type: [])
+    result = nodes.calculate_rate_node({
+        "country": "法国",
+        "weight": 5.0,
+        "cargo_type": "普货",
+    })
+    assert result["rate_results"] == []
+
+
+def test_ask_followup_node_mentions_missing_weight():
+    result = nodes.ask_followup_node({"missing_params": ["weight"]})
+    assert "重量" in result["response"]
+    assert "货物类型" not in result["response"]
+
+
+def test_generate_response_node_preserves_exact_quote_data(monkeypatch):
+    quotes = [{
+        "channel_name": "美国普货快线",
+        "total_price": 105.0,
+        "transit_time": "7-15天",
+    }]
+    monkeypatch.setattr(nodes, "format_rate_response", lambda results: "美国普货快线：105元，7-15天")
+    result = nodes.generate_response_node({"rate_results": quotes})
+    assert result["response"] == "美国普货快线：105元，7-15天"
+    assert result["rate_results"] == quotes
+
+
+def test_generate_response_node_has_fixed_no_match_message():
+    result = nodes.generate_response_node({"rate_results": []})
+    assert result["response"] == "抱歉，未找到符合条件的渠道"
+
+
+def test_format_rate_response_rejects_llm_modified_price():
+    quotes = [{"channel_name": "美国普货快线", "total_price": 105.0, "transit_time": "7-15天"}]
+    result = nodes.format_rate_response(quotes, llm_call=lambda prompt: "美国普货快线：99元，时效7-15天")
+    assert result == "美国普货快线：105元，时效7-15天"
+
+
+def test_format_rate_response_accepts_faithful_llm_response():
+    quotes = [{"channel_name": "美国普货快线", "total_price": 105.0, "transit_time": "7-15天"}]
+    result = nodes.format_rate_response(quotes, llm_call=lambda prompt: "推荐美国普货快线，价格105元，时效7-15天。")
+    assert result == "推荐美国普货快线，价格105元，时效7-15天。"
+
+
+def test_graph_routes_missing_weight_to_followup(monkeypatch):
+    import agent.graph as graph
+
+    monkeypatch.setattr(graph, "parse_intent_node", lambda state: {
+        "intent_type": "rate_query",
+        "country": "日本",
+        "weight": None,
+        "cargo_type": None,
+        "cargo_types": ["普货", "P"],
+        "missing_params": ["weight"],
+    })
+    result = graph.run_once("寄到日本多少钱")
+    assert "重量" in result["response"]
+    assert "货物类型" not in result["response"]
+
+
+def test_parse_intent_defaults_missing_cargo_to_general_and_sensitive(monkeypatch):
+    monkeypatch.setattr(nodes, "parse_intent", lambda text: {
+        "intent_type": "rate_query",
+        "country": "美国",
+        "weight": 3.0,
+        "cargo_type": None,
+        "missing_params": [],
+    })
+    result = nodes.parse_intent_node({
+        "user_input": "寄美国，3公斤",
+        "route": None,
+        "country": None,
+        "weight": None,
+        "cargo_type": None,
+        "cargo_types": None,
+    })
+    assert result["cargo_type"] is None
+    assert result["cargo_types"] == ["普货", "P"]
+    assert result["missing_params"] == []
+
+
+def test_parse_intent_does_not_reuse_cargo_from_completed_previous_turn(monkeypatch):
+    monkeypatch.setattr(nodes, "parse_intent", lambda text: {
+        "intent_type": "rate_query",
+        "country": "美国",
+        "weight": 3.0,
+        "cargo_type": None,
+        "missing_params": [],
+    })
+    result = nodes.parse_intent_node({
+        "user_input": "寄美国，3公斤",
+        "route": "ready",
+        "country": "美国",
+        "weight": 3.0,
+        "cargo_type": "P",
+        "cargo_types": None,
+    })
+    assert result["cargo_type"] is None
+    assert result["cargo_types"] == ["普货", "P"]
+    assert result["missing_params"] == []
+
+
+def test_parse_intent_reuses_context_only_for_followup(monkeypatch):
+    monkeypatch.setattr(nodes, "parse_intent", lambda text: {
+        "intent_type": "followup",
+        "country": None,
+        "weight": 3.0,
+        "cargo_type": "普货",
+        "missing_params": [],
+    })
+    result = nodes.parse_intent_node({
+        "user_input": "3公斤普货",
+        "route": "ask_followup",
+        "country": "美国",
+        "weight": None,
+        "cargo_type": None,
+        "cargo_types": None,
+    })
+    assert result["country"] == "美国"
+    assert result["cargo_type"] == "普货"
+    assert result["cargo_types"] == ["普货"]
+    assert result["missing_params"] == []
+
+
+def test_generic_counterfeit_query_matches_all_p_prefixed_channel_types():
+    for supported_type in ("P", "P服装", "P鞋服", "P包"):
+        assert _cargo_matches(
+            supported_type,
+            "仿牌",
+            f"以色列敏货专线-{supported_type}",
+            [supported_type],
+        )
+
+
+def test_sensitive_cargo_synonyms_normalize_to_p():
+    from agent.tools import normalize_cargo_type
+
+    assert normalize_cargo_type("仿牌") == "P"
+    assert normalize_cargo_type("敏货") == "P"
+    assert normalize_cargo_type("敏感货") == "P"
+    assert normalize_cargo_type("P") == "P"
+
+
+def test_explicit_p_clothing_query_does_not_match_generic_p_channel():
+    assert not _cargo_matches("P", "P服装", "普通敏货专线", ["P"])
+
+
+def test_graph_end_to_end_with_followup_data(monkeypatch):
+    import agent.graph as graph
+
+    calls = []
+
+    def fake_parse(state):
+        calls.append(state["user_input"])
+        if state["user_input"] == "寄到日本多少钱":
+            return {
+                "intent_type": "rate_query",
+                "country": "日本",
+                "weight": None,
+                "cargo_type": None,
+                "cargo_types": ["普货", "P"],
+                "missing_params": ["weight"],
+            }
+        return {
+            "intent_type": "rate_query",
+            "country": "日本",
+            "weight": 2.0,
+            "cargo_type": "P服装",
+            "cargo_types": ["P服装"],
+            "missing_params": [],
+        }
+
+    expected = [{"channel_name": "日本普货佐川", "total_price": 119.0, "transit_time": "4-7天"}]
+    monkeypatch.setattr(graph, "parse_intent_node", fake_parse)
+    monkeypatch.setattr(graph, "calculate_rate_node", lambda state: {"rate_results": expected})
+    monkeypatch.setattr(graph, "generate_response_node", lambda state: {
+        "response": "日本普货佐川：119元，4-7天",
+        "rate_results": state["rate_results"],
+    })
+
+    first = graph.run_once("寄到日本多少钱")
+    second = graph.run_once("2kg衣服", first)
+    assert "重量" in first["response"]
+    assert "日本普货佐川" in second["response"]
+    assert second["rate_results"] == expected
+    assert calls == ["寄到日本多少钱", "2kg衣服"]
+
+
+def test_initial_state_clears_completed_turn_fields():
+    import agent.graph as graph
+
+    state = graph._initial_state(
+        "寄美国，3公斤",
+        {
+            "route": "ready",
+            "country": "美国",
+            "weight": 3.0,
+            "cargo_type": "P",
+            "cargo_types": ["P"],
+        },
+    )
+    assert state == {
+        "user_input": "寄美国，3公斤",
+        "country": None,
+        "weight": None,
+        "cargo_type": None,
+        "cargo_types": None,
+        "route": None,
+    }
+
+
+def test_initial_state_preserves_context_for_followup():
+    import agent.graph as graph
+
+    state = graph._initial_state(
+        "3公斤普货",
+        {
+            "route": "ask_followup",
+            "country": "美国",
+            "weight": None,
+            "cargo_type": None,
+            "cargo_types": ["普货", "P"],
+        },
+    )
+    assert state == {
+        "user_input": "3公斤普货",
+        "route": "ask_followup",
+        "country": "美国",
+        "weight": None,
+        "cargo_type": None,
+        "cargo_types": ["普货", "P"],
+    }
+
+
+def test_graph_real_rate_engine_returns_quote_for_us_5kg(tmp_path, monkeypatch):
+    db = tmp_path / "shipping.db"
+    init_db(db)
+    load_rates([ChannelRate(
+        sheet_name="美国专线小包",
+        channel_name="美国普货快线",
+        countries="美国",
+        cargo_type="普货",
+        weight_min=0.05,
+        weight_max=10,
+        price_per_kg=20,
+        handling_fee=5,
+        transit_time="7-15天",
+    )], db)
+    monkeypatch.setenv("SHIPPING_DB_PATH", str(db))
+    monkeypatch.setattr(nodes, "parse_intent", lambda text: {
+        "intent_type": "rate_query",
+        "country": "美国",
+        "weight": 5.0,
+        "cargo_type": "普货",
+        "missing_params": [],
+    })
+    result = nodes.parse_intent_node({"user_input": "美国5kg普货多少钱"})
+    result.update(nodes.check_params_node(result))
+    result.update(nodes.calculate_rate_node(result))
+    assert result["rate_results"][0]["channel_name"] == "美国普货快线"
+    assert result["rate_results"][0]["total_price"] == 105
+    assert result["rate_results"][0]["transit_time"] == "7-15天"
+
+
+def test_graph_real_rate_engine_returns_apology_when_no_match(tmp_path, monkeypatch):
+    db = tmp_path / "shipping.db"
+    init_db(db)
+    monkeypatch.setenv("SHIPPING_DB_PATH", str(db))
+    result = nodes.generate_response_node({"rate_results": []})
+    assert result["response"] == "抱歉，未找到符合条件的渠道"

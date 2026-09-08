@@ -4,13 +4,13 @@
 
 **Blocked by:** 01 项目脚手架与依赖配置
 
-**Status:** ready-for-agent
+**Status:** complete
 
 ## Acceptance criteria
 
-- [ ] `agent/tools.py` 中定义 `CARGO_TYPE_SYNONYMS` 映射字典
-- [ ] 实现 `normalize_cargo_type(user_input: str) -> str` 函数
-- [ ] 覆盖以下高频映射：
+- [x] `agent/tools.py` 中定义 `CARGO_TYPE_SYNONYMS` 映射字典
+- [x] 实现 `normalize_cargo_type(user_input: str) -> str` 函数
+- [x] 覆盖以下高频映射：
   - "普通商品"/"没特殊要求"/"一般货物" → "普货"
   - "衣服"/"服装"/"鞋子"/"包包" → "P服装"
   - "电子产品"/"手机"/"带电池"/"笔记本" → "带电"
@@ -18,9 +18,9 @@
   - "香水"/"酒精液体" → "液体"
   - "纯电池"/"充电宝" → "纯电池"
   - "粉末"/"粉状物" → "粉末"
-- [ ] 大小写不敏感匹配
-- [ ] 未命中时返回原始输入（留给 LLM fallback）
-- [ ] 单元测试覆盖所有高频映射 + 未命中场景
+- [x] 大小写不敏感匹配
+- [x] 未命中时返回原始输入（留给 LLM fallback）
+- [x] 单元测试覆盖所有高频映射 + 未命中场景
 
 ## Technical notes
 
